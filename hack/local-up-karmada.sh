@@ -31,7 +31,7 @@ function usage() {
     echo "    h: print help information"
 }
 
-while getopts 'h' OPT; do
+while getopts 'h' OPT; do # 循环处理命令选项
     case $OPT in
         h)
           usage
@@ -59,6 +59,7 @@ export PULL_MODE_CLUSTER_NAME=${PULL_MODE_CLUSTER_NAME:-"member3"}
 export HOST_IPADDRESS=${1:-}
 
 # step1. set up a base development environment
+# 总结：检测必要开发工具是否安装，如go/docker；编译karmada组件镜像；创建并启动kind集群，联通kind集群网络，准备kubeconfig文件
 "${REPO_ROOT}"/hack/setup-dev-base.sh
 export KUBECONFIG="${MAIN_KUBECONFIG}"
 

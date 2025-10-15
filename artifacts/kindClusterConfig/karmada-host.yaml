@@ -1,10 +1,10 @@
 kind: Cluster
 apiVersion: "kind.x-k8s.io/v1alpha4"
 networking:
-  apiServerAddress: "{{host_ipaddress}}"
+  apiServerAddress: "{{host_ipaddress}}" # 指定Kubernetes API服务器的服务地址
 nodes:
-  - role: control-plane
-    extraPortMappings:
+  - role: control-plane # 定义集群中的节点列表，指定该节点角色为控制平面（主节点）
+    extraPortMappings: # 网络与端口映射，将容器内的端口映射到主机端口
       - containerPort: 5443
         hostPort: 5443
         protocol: TCP

@@ -173,7 +173,7 @@ function util::cmd_must_exist_cfssl {
 function util::install_environment_check {
     local ARCH=${1:-}
     local OS=${2:-}
-    if [[ "$ARCH" =~ ^(amd64|arm64)$ ]]; then
+    if [[ "$ARCH" =~ ^(amd64|arm64)$ ]]; then # 比如windows就不支持:)
         if [[ "$OS" =~ ^(linux|darwin)$ ]]; then
             return 0
         fi
@@ -212,14 +212,14 @@ function util::install_helm {
 
 # util::create_signing_certkey creates a CA, args are sudo, dest-dir, ca-id, purpose
 function util::create_signing_certkey {
-    local sudo=$1
-    local dest_dir=$2
-    local id=$3
-    local cn=$4
+    local sudo=$1 # 是否使用sudo权限
+    local dest_dir=$2 # 证书生成的目标路径
+    local id=$3 # 证书标识符
+    local cn=$4 # 证书主题
     local purpose=$5
     OPENSSL_BIN=$(command -v openssl)
     # Create ca
-    ${sudo} /usr/bin/env bash -e <<EOF
+    ${sudo} /usr/bin/env bash -e <<EOF # /usr/bin/env bash -e 以-e选项启动bash，表示一旦有任何命令失败，脚本就会立即退出
     rm -f "${dest_dir}/${id}.crt" "${dest_dir}/${id}.key"
     ${OPENSSL_BIN} req -x509 -sha256 -new -nodes -days 3650 -newkey rsa:3072 -keyout "${dest_dir}/${id}.key" -out "${dest_dir}/${id}.crt" -subj "/CN=${cn}/"
     echo '{"signing":{"default":{"expiry":"43800h","usages":["signing","key encipherment",${purpose}]}}}' > "${dest_dir}/${id}-config.json"
@@ -227,21 +227,24 @@ EOF
 }
 
 # util::create_certkey signs a certificate: args are sudo, dest-dir, ca, filename (roughly), subject, hosts...
+# util::create_certkey "" "${CERT_DIR}" "ca" server server "" "${karmadaAltNames[@]}"
 function util::create_certkey {
     local sudo=$1
     local dest_dir=$2
     local ca=$3
     local id=$4
-    local cn=${5:-$4}
-    local og=$6
+    local cn=${5:-$4} # 证书主题
+    local og=$6 # 证书组织
     local hosts=""
     local SEP=""
-    shift 6
-    while [[ -n "${1:-}" ]]; do
+    shift 6 # shift 6表示将位置参数向左移动6位，$1变成原来的$7，$2变成原来的$8，以此类推
+    while [[ -n "${1:-}" ]]; do # 处理主机名参数，将多个参数主机名参数用','连接成一个字符串
         hosts+="${SEP}\"$1\""
         SEP=","
         shift 1
     done
+    # cfssl gencert生成证书，-ca指定证书文件，-ca-key指定私钥证书文件，-config指定配置文件
+    # cfssljson -bare 指定输出文件名
     ${sudo} /usr/bin/env bash -e <<EOF
     cd ${dest_dir}
     echo '{"CN":"${cn}","hosts":[${hosts}],"names":[{"O":"${og}"}],"key":{"algo":"rsa","size":3072}}' | ${CFSSL_BIN} gencert -ca=${ca}.crt -ca-key=${ca}.key -config=${ca}-config.json - | ${CFSSLJSON_BIN} -bare ${id}
@@ -687,6 +690,7 @@ function util::get_load_balancer_ip() {
 #  - $3: the context in kubeconfig of the cluster wanted to be connected
 function util::add_routes() {
   unset IFS
+  # 提取出节点的PodCIDR和节点的InternalIP, 生成路由命令：ip route add <PodCIDR> via <InternalIP>
   routes=$(kubectl --kubeconfig ${2} --context ${3} get nodes -o jsonpath='{range .items[*]}ip route add {.spec.podCIDR} via {.status.addresses[?(.type=="InternalIP")].address}{"\n"}{end}')
   echo "Connecting cluster ${1} to ${2}"
 
