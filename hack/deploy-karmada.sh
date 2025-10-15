@@ -24,7 +24,7 @@ KUBE_CACHE_MUTATION_DETECTOR="${KUBE_CACHE_MUTATION_DETECTOR:-false}"
 
 REPO_ROOT=$(dirname "${BASH_SOURCE[0]}")/..
 CERT_DIR=${CERT_DIR:-"${HOME}/.karmada"}
-mkdir -p "${CERT_DIR}" &>/dev/null ||  mkdir -p "${CERT_DIR}"
+mkdir -p "${CERT_DIR}" &>/dev/null ||  mkdir -p "${CERT_DIR}" # 看清楚这里是逻辑运算符或而不是管道连接符，shell中||的逻辑是前一条命令执行失败才执行后一条命令
 rm -f "${CERT_DIR}/*" &>/dev/null ||  rm -f "${CERT_DIR}/*"
 KARMADA_APISERVER_SECURE_PORT=${KARMADA_APISERVER_SECURE_PORT:-5443}
 
@@ -36,6 +36,8 @@ CFSSL_VERSION="v1.6.5"
 LOAD_BALANCER=${LOAD_BALANCER:-false} # whether create a 'LoadBalancer' type service for karmada apiserver
 source "${REPO_ROOT}"/hack/util.sh
 
+# 当前组件的用途是部署karmada控制面组件到指定的集群当中
+# 脚本的使用方法是：hack/deploy-karmada.sh <KUBECONFIG> <CONTEXT_NAME> [HOST_CLUSTER_TYPE]
 function usage() {
   echo "This script deploys karmada control plane components to a given cluster."
   echo "Note: This script is an internal script and is not intended used by end-users."
@@ -50,14 +52,14 @@ function usage() {
 
 # recover the former value of KUBECONFIG
 function recover_kubeconfig {
-  if [ -n "${CURR_KUBECONFIG+x}" ];then
+  if [ -n "${CURR_KUBECONFIG+x}" ];then # ${CURR_KUBECONFIG+x}根据变量的值是否设置、如果设置了返回x，否则返回空字符串
     export KUBECONFIG="${CURR_KUBECONFIG}"
   else
     unset KUBECONFIG
   fi
 }
 
-if [[ $# -lt 2 ]]; then
+if [[ $# -lt 2 ]]; then # $# 表示传递给脚本的参数个数，如果参数数量小于2，则提示用法并推出脚本
   usage
   exit 1
 fi
@@ -72,7 +74,7 @@ fi
 
 # check context existence and switch
 # backup current kubeconfig before changing KUBECONFIG
-if [ -n "${KUBECONFIG+x}" ];then
+if [ -n "${KUBECONFIG+x}" ];then # 如果KUBECONFIG变量设置了将其报错到CURR_KUBECONFIG变量中
   CURR_KUBECONFIG=$KUBECONFIG
 fi
 export KUBECONFIG="${HOST_CLUSTER_KUBECONFIG}"
@@ -150,6 +152,7 @@ function generate_config_secret() {
   kubectl --context="${HOST_CLUSTER_NAME}" apply -f "${TEMP_PATH}"/${component}-config-secret.yaml
 }
 
+# 作用是从artifacts目录下拷贝secret yaml到临时文件并完成对其中关键字段的替换
 function generate_cert_secret() {
   local name=$1
   cp "${REPO_ROOT}"/artifacts/deploy/karmada-cert-secret.yaml "${TEMP_PATH}"/${name}-cert-secret.yaml
@@ -207,9 +210,11 @@ interpreter_webhook_example_service_external_ip_prefix=$(echo $(util::get_apiser
 interpreter_webhook_example_service_external_ip_address=${interpreter_webhook_example_service_external_ip_prefix}.8
 
 # generate cert
+# 检查openssl命令是否存在
 util::cmd_must_exist "openssl"
 util::cmd_must_exist_cfssl ${CFSSL_VERSION}
-# create CA signers
+# create CA signers 
+# 创建签名的CA证书和私钥
 util::create_signing_certkey "" "${CERT_DIR}" ca karmada '"client auth","server auth"'
 
 karmadaAltNames=("*.karmada-system.svc.cluster.local" "*.karmada-system.svc" "localhost" "127.0.0.1" $(util::get_apiserver_ip_from_kubeconfig "${HOST_CLUSTER_NAME}") "${interpreter_webhook_example_service_external_ip_address}")
@@ -322,12 +327,14 @@ FRONT_PROXY_CLIENT_KEY=$(base64 < "${CERT_DIR}/front-proxy-client.key" | tr -d '
 SA_PUB=$(base64 < "${CERT_DIR}/sa.pub" | tr -d '\r\n')
 SA_KEY=$(base64 < "${CERT_DIR}/sa.key" | tr -d '\r\n')
 
-generate_cert_related_secrets
+# 生成相关的secret文件
+generate_cert_related_secrets 
 
 # deploy karmada etcd
 kubectl --context="${HOST_CLUSTER_NAME}" apply -f "${REPO_ROOT}/artifacts/deploy/karmada-etcd.yaml"
 
 # Wait for karmada-etcd to come up before launching the rest of the components.
+# 等待pod启动完成
 util::wait_pod_ready "${HOST_CLUSTER_NAME}" "${ETCD_POD_LABEL}" "${KARMADA_SYSTEM_NAMESPACE}"
 
 #KARMADA_APISERVER_SERVICE_TYPE is the service type of karmada API Server, For connectivity, it will be different when
@@ -409,8 +416,14 @@ then
   exit 1
 fi
 
+# 这段代码的核心目标是：在karmada-apiserver成功启动后，向其注册karmada所需的所有自定义API
+# 这些自定义API分为两种类型，因此代码也清晰地分为了两个部分来处理
+# 1. CRD：定义全新的资源类型，其数据直接存储在Karmada的etcd中
+# 2. Aggregated API (聚合API)：将来自其他独立API服务器的API”挂载“到karmada-apiserver上，实现API的扩展
+
+# 通过webhook进行版本转换
 TEMP_PATH_CRDS=$(mktemp -d)
-trap '{ rm -rf ${TEMP_PATH_CRDS}; }' EXIT
+trap '{ rm -rf ${TEMP_PATH_CRDS}; }' EXIT # 设置一个“陷阱”，这条命令保证了无论脚本是正常结束还是异常退出或中断，这个临时目录都会被自动删除
 cp -rf "${REPO_ROOT}"/charts/karmada/_crds "${TEMP_PATH_CRDS}"
 util::fill_cabundle "${ROOT_CA_FILE}" "${TEMP_PATH_CRDS}/_crds/patches/webhook_in_resourcebindings.yaml"
 sed -i'' -e "s/{{name}}/karmada-webhook/g" "${TEMP_PATH_CRDS}/_crds/patches/webhook_in_resourcebindings.yaml"
@@ -420,6 +433,10 @@ sed -i'' -e "s/{{name}}/karmada-webhook/g" "${TEMP_PATH_CRDS}/_crds/patches/webh
 sed -i'' -e "s/{{namespace}}/karmada-system/g" "${TEMP_PATH_CRDS}/_crds/patches/webhook_in_clusterresourcebindings.yaml"
 installCRDs "karmada-apiserver" "${TEMP_PATH_CRDS}"
 
+# 配置代理服务（APIService）
+# 这些APIService的作用是将karmada-aggregated-apiserver、karmada-metrics-adapter、karmada-search这三个独立的API服务器
+# 的API聚合到karmada-apiserver上，从而扩展karmada-apiserver的功能
+# 由于这些API服务器都是启用了TLS的，因此需要在对应的APIService中配置caBundle字段
 # render the caBundle in these apiservice with root ca, then karmada-apiserver can use caBundle to verify corresponding AA's server-cert
 TEMP_PATH_APISERVICE=$(mktemp -d)
 trap '{ rm -rf ${TEMP_PATH_APISERVICE}; }' EXIT
@@ -455,6 +472,7 @@ kubectl --context="karmada-apiserver" apply -f "${REPO_ROOT}/artifacts/deploy/ad
 kubectl --context="karmada-apiserver" apply -f "${REPO_ROOT}/artifacts/deploy/cluster-proxy-admin-rbac.yaml"
 
 # deploy bootstrap token configuration for registering member clusters with PULL mode
+# 支持PULL模式的集群注册时的证书和权限配置
 karmada_ca=$(base64 < "${ROOT_CA_FILE}" | tr -d '\r\n')
 karmada_apiserver_address=https://"${KARMADA_APISERVER_IP}:${KARMADA_APISERVER_SECURE_PORT}"
 TEMP_PATH_BOOTSTRAP=$(mktemp -d)

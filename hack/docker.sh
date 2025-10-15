@@ -115,8 +115,8 @@ function signImage(){
   fi
 }
 
-function isCross() {
-  local platforms=$1
+function isCross() { # 判断是否跨平台
+  local platforms=$1 # 获取平台参数
 
   IFS="," read -ra platform_array <<< "${platforms}"
   if [[ ${#platform_array[@]} -ne 1 ]]; then

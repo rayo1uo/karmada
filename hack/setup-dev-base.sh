@@ -22,7 +22,7 @@ set -o pipefail
 # Karmada component images built from the latest code. The remaining clusters
 # will serve as member clusters and will be registered to the Karmada control
 # plane using the installation tool.
-# Note: This script works for both Linux and MacOS.
+# Note: This script works for both Linux and MacOS. Great!
 
 REPO_ROOT=$(dirname "${BASH_SOURCE[0]}")/..
 source "${REPO_ROOT}"/hack/util.sh
@@ -107,7 +107,7 @@ if [[ -n "${HOST_IPADDRESS}" ]]; then # If bind the port of clusters(karmada-hos
   util::verify_ip_address "${HOST_IPADDRESS}"
   cp -rf "${REPO_ROOT}"/artifacts/kindClusterConfig/karmada-host.yaml "${TEMP_PATH}"/karmada-host.yaml
   sed -i'' -e "s/{{host_ipaddress}}/${HOST_IPADDRESS}/g" "${TEMP_PATH}"/karmada-host.yaml
-  sed -i'' -e 's/networking:/&\'$'\n''  apiServerAddress: "'${HOST_IPADDRESS}'"/' "${TEMP_PATH}"/member1.yaml
+  sed -i'' -e 's/networking:/&\'$'\n''  apiServerAddress: "'${HOST_IPADDRESS}'"/' "${TEMP_PATH}"/member1.yaml # "&\'$'\n'" 单引号不解释转义字符，&表示待替换的原字符串 $'\n'表示换行符
   sed -i'' -e 's/networking:/&\'$'\n''  apiServerAddress: "'${HOST_IPADDRESS}'"/' "${TEMP_PATH}"/member2.yaml
   sed -i'' -e 's/networking:/&\'$'\n''  apiServerAddress: "'${HOST_IPADDRESS}'"/' "${TEMP_PATH}"/member3.yaml
   util::create_cluster "${HOST_CLUSTER_NAME}" "${MAIN_KUBECONFIG}" "${CLUSTER_VERSION}" "${KIND_LOG_FILE}" "${TEMP_PATH}"/karmada-host.yaml
@@ -118,19 +118,22 @@ util::create_cluster "${MEMBER_CLUSTER_1_NAME}" "${MEMBER_CLUSTER_1_TMP_CONFIG}"
 util::create_cluster "${MEMBER_CLUSTER_2_NAME}" "${MEMBER_CLUSTER_2_TMP_CONFIG}" "${CLUSTER_VERSION}" "${KIND_LOG_FILE}" "${TEMP_PATH}"/member2.yaml
 util::create_cluster "${PULL_MODE_CLUSTER_NAME}" "${PULL_MODE_CLUSTER_TMP_CONFIG}" "${CLUSTER_VERSION}" "${KIND_LOG_FILE}" "${TEMP_PATH}"/member3.yaml
 
+# 创建3个kind集群：member1 member2 member3和一个控制面的kind集群karmada-host
+
 #step2. make images and get karmadactl
 export VERSION="latest"
 export REGISTRY="docker.io/karmada"
 if [[ "${BUILD_FROM_SOURCE}" == "true" ]]; then
   export KARMADA_IMAGE_LABEL_VALUE="May_be_pruned_in_local_up_environment"
   export DOCKER_BUILD_ARGS="${DOCKER_BUILD_ARGS:-} --label=image.karmada.io=${KARMADA_IMAGE_LABEL_VALUE}"
-  make images GOOS="linux" --directory="${REPO_ROOT}"
+  make images GOOS="linux" --directory="${REPO_ROOT}" # 构建组件的镜像
   #clean up dangling images
   docker image prune --force --filter "label=image.karmada.io=${KARMADA_IMAGE_LABEL_VALUE}"
 fi
-GO111MODULE=on go install "github.com/karmada-io/karmada/cmd/karmadactl"
+GO111MODULE=on go install "github.com/karmada-io/karmada/cmd/karmadactl" # 安装karmadactl二进制文件到$GOPATH/bin目录下
 
 #step3. wait until clusters ready
+# 等待kind集群启动完毕
 echo "Waiting for the clusters to be ready..."
 util::check_clusters_ready "${MAIN_KUBECONFIG}" "${HOST_CLUSTER_NAME}"
 util::check_clusters_ready "${MEMBER_CLUSTER_1_TMP_CONFIG}" "${MEMBER_CLUSTER_1_NAME}"
@@ -140,6 +143,7 @@ util::check_clusters_ready "${PULL_MODE_CLUSTER_TMP_CONFIG}" "${PULL_MODE_CLUSTE
 #step4. load components images to kind cluster
 if [[ "${BUILD_FROM_SOURCE}" == "true" ]]; then
   # host cluster
+  # 将docker镜像加载到kind集群当中
   kind load docker-image "${REGISTRY}/karmada-controller-manager:${VERSION}" --name="${HOST_CLUSTER_NAME}"
   kind load docker-image "${REGISTRY}/karmada-scheduler:${VERSION}" --name="${HOST_CLUSTER_NAME}"
   kind load docker-image "${REGISTRY}/karmada-descheduler:${VERSION}" --name="${HOST_CLUSTER_NAME}"
@@ -157,17 +161,22 @@ fi
 
 #step5. connecting networks between karmada-host, member1 and member2 clusters
 echo "connecting cluster networks..."
+# 在member1集群的每个节点上通过ip route add增加到member2集群pod的路由
 util::add_routes "${MEMBER_CLUSTER_1_NAME}" "${MEMBER_CLUSTER_2_TMP_CONFIG}" "${MEMBER_CLUSTER_2_NAME}"
+# 在member2集群的每个节点上通过ip route add增加到member1集群pod的路由
 util::add_routes "${MEMBER_CLUSTER_2_NAME}" "${MEMBER_CLUSTER_1_TMP_CONFIG}" "${MEMBER_CLUSTER_1_NAME}"
 
+# 联通host_cluster和member1集群的网络
 util::add_routes "${HOST_CLUSTER_NAME}" "${MEMBER_CLUSTER_1_TMP_CONFIG}" "${MEMBER_CLUSTER_1_NAME}"
 util::add_routes "${MEMBER_CLUSTER_1_NAME}" "${MAIN_KUBECONFIG}" "${HOST_CLUSTER_NAME}"
 
+# 联通host_cluster和member2集群的网络
 util::add_routes "${HOST_CLUSTER_NAME}" "${MEMBER_CLUSTER_2_TMP_CONFIG}" "${MEMBER_CLUSTER_2_NAME}"
 util::add_routes "${MEMBER_CLUSTER_2_NAME}" "${MAIN_KUBECONFIG}" "${HOST_CLUSTER_NAME}"
 echo "cluster networks connected"
 
 #step6. merge temporary kubeconfig of member clusters by kubectl
+# 将member集群的kubeconfig合并为一个文件
 export KUBECONFIG=$(find ${KUBECONFIG_PATH} -maxdepth 1 -type f | grep ${MEMBER_TMP_CONFIG_PREFIX} | tr '\n' ':')
 kubectl config view --flatten > ${MEMBER_CLUSTER_KUBECONFIG}
 rm $(find ${KUBECONFIG_PATH} -maxdepth 1 -type f | grep ${MEMBER_TMP_CONFIG_PREFIX})

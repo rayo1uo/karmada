@@ -42,8 +42,8 @@ LDFLAGS="$(util::version_ldflags) ${LDFLAGS:-}"
 function build_binary() {
   local -r target=$1
 
-  IFS="," read -ra platforms <<< "${BUILD_PLATFORMS:-}"
-  if [[ ${#platforms[@]} -eq 0 ]]; then
+  IFS="," read -ra platforms <<< "${BUILD_PLATFORMS:-}" # 从环境变量读取内容到数组，以逗号作为分割
+  if [[ ${#platforms[@]} -eq 0 ]]; then # 计算数组的长度，如果长度为0，使用host的platform
     platforms=("$(util:host_platform)")
   fi
 
@@ -56,8 +56,8 @@ function build_binary() {
 function build_binary_for_platform() {
   local -r target=$1
   local -r platform=$2
-  local -r os=${platform%/*}
-  local -r arch=${platform##*/}
+  local -r os=${platform%/*} # ${var%/*} 删除变量var中最后一个/及其右侧的内容，得到os
+  local -r arch=${platform##*/} # ${var##*/} 删除变量var中第一个/及其左侧的内容，得到arch
 
   local gopkg="${KARMADA_GO_PACKAGE}/$(util::get_target_source $target)"
   set -x
