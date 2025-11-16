@@ -104,16 +104,22 @@ type Options struct {
 
 // Context defines the context object for controller.
 type Context struct {
-	Mgr                         controllerruntime.Manager
-	ObjectWatcher               objectwatcher.ObjectWatcher
-	Opts                        Options
-	Context                     context.Context
-	DynamicClientSet            dynamic.Interface
-	KubeClientSet               clientset.Interface
-	OverrideManager             overridemanager.OverrideManager
+	// Mgr controller-runtime的核心组件，管理整个控制器应用的生命周期，包括informer缓存的启动、leader选举、健康检查等
+	Mgr controllerruntime.Manager
+	// ObjectWatcher 用于高效地监视成员集群中特定对象的变更，如execution-controller依赖它来获取work在成员集群中的执行状态
+	ObjectWatcher objectwatcher.ObjectWatcher
+	Opts          Options
+	Context       context.Context
+	// DynamicClientSet 动态客户端，可以在不知道具体Go类型的情况下操作任何kubernetes资源（CRD或内置资源）
+	DynamicClientSet dynamic.Interface
+	KubeClientSet    clientset.Interface
+	// 负责处理overridePolicy的管理器。当需要对分发到不同集群的资源进行差异化配置时，控制器会通过overrideManager来计算和应用这些差异化的配置
+	OverrideManager overridemanager.OverrideManager
+	// 负责监听和响应控制面平面中资源CRD的变化的管理器
 	ControlPlaneInformerManager genericmanager.SingleClusterInformerManager
-	ResourceInterpreter         resourceinterpreter.ResourceInterpreter
-	ClusterClientOption         *util.ClientOption
+	// 资源解释器，用于理解和处理不同类型的Kubernetes资源
+	ResourceInterpreter resourceinterpreter.ResourceInterpreter
+	ClusterClientOption *util.ClientOption
 }
 
 // IsControllerEnabled check if a specified controller enabled or not.

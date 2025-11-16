@@ -162,13 +162,15 @@ func Run(ctx context.Context, opts *options.Options) error {
 
 	profileflag.ListenAndServe(opts.ProfileOpts)
 
+	// 从--kubeconfig参数或环境变量加载与karmada控制平面APIServer通信的配置
 	controlPlaneRestConfig, err := controllerruntime.GetConfig()
 	if err != nil {
 		panic(err)
 	}
 	controlPlaneRestConfig.RateLimiter = flowcontrol.NewTokenBucketRateLimiter(opts.KubeAPIQPS, opts.KubeAPIBurst)
 	controllerManager, err := controllerruntime.NewManager(controlPlaneRestConfig, controllerruntime.Options{
-		Logger:                     klog.Background(),
+		Logger: klog.Background(),
+		// 注册了所有 Karmada 的 CRD 类型（如 PropagationPolicy, Cluster 等）以及 Kubernetes的内置类型，这样管理器才能识别和处理这些对象。
 		Scheme:                     gclient.NewSchema(),
 		Cache:                      cache.Options{SyncPeriod: &opts.ResyncPeriod.Duration},
 		LeaderElection:             opts.LeaderElection.LeaderElect,
@@ -216,10 +218,10 @@ func Run(ctx context.Context, opts *options.Options) error {
 	ctrlmetrics.Registry.MustRegister(metrics.PoolCollectors()...)
 	ctrlmetrics.Registry.MustRegister(metrics.NewBuildInfoCollector())
 
-	setupControllers(ctx, controllerManager, opts)
+	setupControllers(ctx, controllerManager, opts) // 负责初始化所有具体的控制器
 
 	// blocks until the context is done.
-	if err := controllerManager.Start(ctx); err != nil {
+	if err := controllerManager.Start(ctx); err != nil { // 启动管理器；阻塞操作、启动所有已注册的informer和控制器
 		klog.Errorf("controller manager exits unexpectedly: %v", err)
 		return err
 	}
