@@ -152,11 +152,15 @@ func (c *ClusterStatusController) Reconcile(ctx context.Context, req controllerr
 
 	// start syncing status only when the finalizer is present on the given Cluster to
 	// avoid conflict with the cluster controller.
+	// 集群刚创建时：通过这个Finalizer检查，cluster-status-controller避免在cluster-controller完成初始化之前
+	// 就开始同步集群状态
+	// 集群删除时：通过Finalizer检查，避免同步已经无效的集群状态
 	if !controllerutil.ContainsFinalizer(cluster, util.ClusterControllerFinalizer) {
 		klog.V(2).InfoS("Waiting finalizer present for member cluster", "cluster", cluster.Name)
 		return controllerruntime.Result{Requeue: true}, nil
 	}
 
+	// 调用核心的同步函数
 	err := c.syncClusterStatus(ctx, cluster)
 	if err != nil {
 		return controllerruntime.Result{}, err
@@ -166,10 +170,14 @@ func (c *ClusterStatusController) Reconcile(ctx context.Context, req controllerr
 
 // SetupWithManager creates a controller and register to controller manager.
 func (c *ClusterStatusController) SetupWithManager(mgr controllerruntime.Manager) error {
+	// 存储每个集群的健康状况探测历史
 	c.clusterConditionCache = clusterConditionStore{
 		successThreshold: c.ClusterSuccessThreshold.Duration,
 		failureThreshold: c.ClusterFailureThreshold.Duration,
 	}
+	// builder.WithPredicates设置事件过滤器，确保只有在cluster对象的.metadata.generation字段变化时（通常意味着.spec被修改了）才会
+	// 触发Reconcile，避免因.status资源发生变化而引发不必要的Reconcile调用
+	// Complete(c)将ClusterStatusController自身注册为Reconciler，这意味着Reconcile方法将被调用来处理事件
 	return controllerruntime.NewControllerManagedBy(mgr).
 		Named(ControllerName).
 		For(&clusterv1alpha1.Cluster{}, builder.WithPredicates(c.PredicateFunc, predicate.GenerationChangedPredicate{})).
@@ -194,8 +202,10 @@ func (c *ClusterStatusController) syncClusterStatus(ctx context.Context, cluster
 		return setStatusCollectionFailedCondition(ctx, c.Client, cluster, fmt.Sprintf("failed to create a ClusterClient: %v", err))
 	}
 
+	// 健康检查
 	online, healthy := getClusterHealthStatus(clusterClient)
 	observedReadyCondition := generateReadyCondition(online, healthy)
+	// 平滑处理集群状态
 	readyCondition := c.clusterConditionCache.thresholdAdjustedReadyCondition(cluster, &observedReadyCondition)
 
 	// cluster is offline after retry timeout, update cluster status immediately and return.
@@ -220,6 +230,7 @@ func (c *ClusterStatusController) syncClusterStatus(ctx context.Context, cluster
 		c.initializeGenericInformerManagerForCluster(clusterClient)
 
 		var conditions []metav1.Condition
+		// 收集详细状态信息
 		conditions, err = c.setCurrentClusterStatus(clusterClient, cluster, &currentClusterStatus)
 		if err != nil {
 			return err
@@ -275,6 +286,7 @@ func (c *ClusterStatusController) setCurrentClusterStatus(clusterClient *util.Cl
 		if err != nil {
 			klog.ErrorS(err, "Failed to list pods for Cluster", "cluster", cluster.GetName())
 		}
+		// 计算资源摘要
 		currentClusterStatus.NodeSummary = getNodeSummary(nodes)
 		currentClusterStatus.ResourceSummary = getResourceSummary(nodes, pods)
 
