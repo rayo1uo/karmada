@@ -47,6 +47,67 @@ const (
 	requeueIntervalForDirectlyPurge = 5 * time.Second
 )
 
+/*
+1. 获取目标集群列表 (mergeTargetClusters)
+  在循环开始前，它会调用 mergeTargetClusters 整合所有需要处理的集群。这包括
+  spec.Clusters（调度器分配的主要集群）和
+  spec.RequiredBy（因资源依赖关系而必须包含的集群）。
+
+  2. 遍历每一个目标集群
+  函数的核心是一个 for 循环，为 targetClusters 列表中的每个集群生成一个专属的
+  Work。
+
+  3. 创建资源副本 (workload.DeepCopy())
+  这是循环内部至关重要的第一步。它创建了原始资源模板（workload）的一个深拷贝。
+  目的：确保对一个集群（如
+  cluster-A）的定制化修改（如修改副本数、镜像版本）不会污染原始模板，从而影响到下
+  一个集群（如 cluster-B）的处理。每个集群的定制化都是在一个干净的副本上进行的。
+
+  4. 副本数修正 (resourceInterpreter.ReviseReplica)
+   * 场景：当 PropagationPolicy 的 replicaScheduling 策略为
+     Divided（拆分模式）时，调度器会计算出每个集群应分配的副本数，并记录在
+     ResourceBinding 的 spec.clusters[].replicas 字段中。
+   * 操作：resourceInterpreter.ReviseReplica 函数会智能地找到 clonedWorkload
+     中的副本数字段（如 Deployment 的 spec.replicas），并将其值修改为当前
+     targetCluster 被分配到的具体副本数。
+   * 这是实现副本数按权重拆分的关键步骤。
+
+  5. 应用差异化策略 (overrideManager.ApplyOverridePolicies)
+   * 这是实现集群差异化配置的核心步骤，也是 ensureWork
+     中优先级最高的修改步骤（在所有其他修改之后执行）。
+   * 操作：overrideManager 会查找所有适用于当前 clonedWorkload 和 targetCluster
+     的 OverridePolicy 和 ClusterOverridePolicy。
+   * 它会按照策略的优先级，将
+     imageOverriders、argsOverriders、commandOverriders、plaintext
+     等所有差异化规则应用到 clonedWorkload 上。
+   * 例如：如果一个 OverridePolicy 定义了在 cluster-A 中使用 nginx:1.22
+     镜像，那么在处理 cluster-A 的循环中，clonedWorkload 的
+     spec.template.spec.containers[0].image 字段就会被修改为 nginx:1.22。
+
+  6. 准备 Work 对象的元数据
+  在 clonedWorkload 被完全定制化之后，控制器开始准备将要创建的 Work 对象的
+  metadata。
+   * `mergeLabel`：为 Work 对象打上标签，最重要的是
+     ResourceBindingPermanentIDLabel，它像一个“身份证”，将这个 Work 与其父
+     ResourceBinding 永久关联起来，便于后续的查询和管理。
+   * `mergeAnnotations`：添加注解，例如记录它来自哪个 ResourceBinding。
+   * `RecordAppliedOverrides`：将上一步中应用的所有 OverridePolicy 的名称记录在
+     Work 的 annotations
+     中。这极大地提升了系统的可观测性，让用户能清楚地知道一个最终下发的资源到底受
+     到了哪些差异化策略的影响。
+
+  7. 组装并创建/更新 Work 对象 (ctrlutil.CreateOrUpdateWork)
+   * 组装：将最终的 clonedWorkload（作为 Work 的                                 ▄
+     spec.workload.manifests）和上一步准备的 workMeta 组装成一个完整的 Work      █
+     对象。
+   * 设置命名空间：Work 对象的 namespace 被设置为
+     names.GenerateExecutionSpaceName(targetCluster.Name)，即
+     karmada-es-<cluster-name>。这是 Karmada 中 Work
+     对象和目标集群绑定的核心约定。
+   * 创建/更新：调用 CreateOrUpdateWork 辅助函数，在 Karmada
+     控制面中创建或更新这个 Work 对象。
+*/
+
 // ensureWork ensure Work to be created or updated.
 func ensureWork(
 	ctx context.Context, c client.Client, resourceInterpreter resourceinterpreter.ResourceInterpreter, workload *unstructured.Unstructured,
