@@ -189,7 +189,9 @@ func IsBindingScheduled(status *workv1alpha2.ResourceBindingStatus) bool {
 
 // ObtainBindingSpecExistingClusters will obtain the cluster slice existing in the binding's spec field.
 func ObtainBindingSpecExistingClusters(bindingSpec workv1alpha2.ResourceBindingSpec) sets.Set[string] {
+	// spec.Clusters包含调度器为该资源选择的目标集群列表
 	clusterNames := util.ConvertToClusterNames(bindingSpec.Clusters)
+	// 主资源（如Deployment）创建独立的ResourceBinding，依赖资源(如Configmap)创建附属的ResourceBinding，附属的ResourceBinding的requriedBy字段会包含引用它的主资源的ResourceBinding信息
 	for _, binding := range bindingSpec.RequiredBy {
 		for _, targetCluster := range binding.Clusters {
 			clusterNames.Insert(targetCluster.Name)

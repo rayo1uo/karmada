@@ -90,6 +90,7 @@ func (c *ResourceBindingController) Reconcile(ctx context.Context, req controlle
 		return c.removeFinalizer(ctx, binding)
 	}
 
+	// 关键核心函数
 	return c.syncBinding(ctx, binding)
 }
 
@@ -109,7 +110,7 @@ func (c *ResourceBindingController) removeFinalizer(ctx context.Context, rb *wor
 
 // syncBinding will sync resourceBinding to Works.
 func (c *ResourceBindingController) syncBinding(ctx context.Context, binding *workv1alpha2.ResourceBinding) (controllerruntime.Result, error) {
-	if err := c.removeOrphanWorks(ctx, binding); err != nil {
+	if err := c.removeOrphanWorks(ctx, binding); err != nil { // 先移除不需要的works
 		return controllerruntime.Result{}, err
 	}
 
@@ -124,6 +125,7 @@ func (c *ResourceBindingController) syncBinding(ctx context.Context, binding *wo
 		return controllerruntime.Result{RequeueAfter: requeueIntervalForDirectlyPurge}, nil
 	}
 
+	// 获取资源模版，比如完整的deployment
 	workload, err := helper.FetchResourceTemplate(ctx, c.DynamicClient, c.InformerManager, c.RESTMapper, binding.Spec.Resource)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -184,6 +186,10 @@ func (c *ResourceBindingController) checkDirectPurgeOrphanWorks(ctx context.Cont
 }
 
 // SetupWithManager creates a controller and register to controller manager.
+// For定义控制器的主监听资源，当一个ResourceBinding被创建、更新或删除时，controller-runtime会自动将该ResourceBinding
+// 的NamespacedName放入工作队列，触发Reconcile函数
+// Watches定义控制器的次监听资源，当一个OverridePolicy发生变化时，控制器不去Reconcile这个OverridePolicy本身，
+// 而是通过MapFunc函数找到所有可能受该OverridePolicy影响的ResourceBinding，并将这些ResourceBinding的NamespacedName放入工作队列，触发Reconcile函数
 func (c *ResourceBindingController) SetupWithManager(mgr controllerruntime.Manager) error {
 	return controllerruntime.NewControllerManagedBy(mgr).
 		Named(ControllerName).

@@ -45,6 +45,7 @@ func GetWorksByBindingID(ctx context.Context, c client.Client, bindingID string,
 		key = indexregistry.WorkIndexByLabelClusterResourceBindingID
 	}
 	workList := &workv1alpha1.WorkList{}
+	// 这里在使用FieldSelector选项时时查询本地索引，在pkg/util/indexregistry/fieldindex.go中注册了索引(类似于map[string][]ObjectKey)的数据结构
 	listOpt := &client.ListOptions{
 		FieldSelector: fields.OneTermEqualSelector(key, bindingID),
 	}
