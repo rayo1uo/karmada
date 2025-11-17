@@ -65,16 +65,24 @@ const (
 	workDispatchingConditionReason = "Dispatching"
 )
 
+// execution-controller是Karmada控制面中负责将资源最终下发到成员集群的执行者；它的核心任务是监听work资源对象，
+// 并将Work中定义的Kubernetes资源在指定的目标集群上创建、更新或删除
+
 // Controller is to sync Work.
 type Controller struct {
-	client.Client      // used to operate Work resources.
-	EventRecorder      record.EventRecorder
-	RESTMapper         meta.RESTMapper
+	client.Client // used to operate Work resources.
+	EventRecorder record.EventRecorder
+	RESTMapper    meta.RESTMapper
+	// ObjectWatcher 处理资源在成员集群的CRUD操作
 	ObjectWatcher      objectwatcher.ObjectWatcher
 	WorkPredicateFunc  predicate.Predicate
 	InformerManager    genericmanager.MultiClusterInformerManager
 	RateLimiterOptions ratelimiterflag.Options
 }
+
+// Reconcile函数的执行时机包括：
+// 1.Work资源的创建；Work资源的更新，如Work对象的spec发生变化时；Work对象被删除时，会给Work对象加上deletionTimestamp；
+// 2.协调失败导致的重试；
 
 // Reconcile performs a full reconciliation for the object referred to by the Request.
 // The Controller will requeue the Request to be processed again if an error is non-nil or
@@ -92,6 +100,7 @@ func (c *Controller) Reconcile(ctx context.Context, req controllerruntime.Reques
 		return controllerruntime.Result{}, err
 	}
 
+	// 从work的命名空间来获取成员集群的名称，work命名空间的命名规则是karmada-es-<cluster-name>
 	clusterName, err := names.GetClusterName(work.Namespace)
 	if err != nil {
 		klog.ErrorS(err, "Failed to get member cluster name for work", "namespace", work.Namespace, "name", work.Name)
@@ -104,19 +113,23 @@ func (c *Controller) Reconcile(ctx context.Context, req controllerruntime.Reques
 		return controllerruntime.Result{}, err
 	}
 
+	// 处理work的删除：如果work的deletionTimestamp不为空，说明这个work对象正在被删除，控制器需要执行清理工作
 	if !work.DeletionTimestamp.IsZero() {
 		if err := c.handleWorkDelete(ctx, work, cluster); err != nil {
 			return controllerruntime.Result{}, err
 		}
 
+		// 删除work中的execution-controller finalizer，允许Kubernetes完成对work对象的删除
 		return c.removeFinalizer(ctx, work)
 	}
 
+	// 更新condition状态
 	if err := c.updateWorkDispatchingConditionIfNeeded(ctx, work); err != nil {
 		klog.ErrorS(err, "Failed to update work condition type", "type", workv1alpha1.WorkDispatching)
 		return controllerruntime.Result{}, err
 	}
 
+	// 如果work的状态是suspendDispatching，就不再向成员集群下发资源
 	if util.IsWorkSuspendDispatching(work) {
 		klog.V(4).InfoS("Skip syncing work for cluster as work dispatch is suspended.", "namespace", work.Namespace, "name", work.Name, "cluster", cluster.Name)
 		return controllerruntime.Result{}, nil
@@ -127,7 +140,7 @@ func (c *Controller) Reconcile(ctx context.Context, req controllerruntime.Reques
 		klog.ErrorS(err, "Stop syncing the work for the cluster as cluster not ready.", "namespace", work.Namespace, "name", work.Name, "cluster", cluster.Name)
 		return controllerruntime.Result{}, err
 	}
-
+	// 同步资源到目标集群
 	return c.syncWork(ctx, clusterName, work)
 }
 
@@ -166,6 +179,7 @@ func (c *Controller) syncWork(ctx context.Context, clusterName string, work *wor
 
 func (c *Controller) handleWorkDelete(ctx context.Context, work *workv1alpha1.Work, cluster *clusterv1alpha1.Cluster) error {
 	if ptr.Deref(work.Spec.PreserveResourcesOnDeletion, false) {
+		// 如果是work删除时保留资源，仅清理work中涉及到的资源中的元数据
 		if err := c.cleanupPolicyClaimMetadata(ctx, work, cluster); err != nil {
 			klog.ErrorS(err, "Failed to remove annotations and labels", "cluster", cluster.Name)
 			return err
@@ -202,12 +216,14 @@ func (c *Controller) cleanupPolicyClaimMetadata(ctx context.Context, work *workv
 			return err
 		}
 
+		// 从成员集群的缓存中获取对应的资源对象；如果从缓存获取失败，fallback到调用API Server获取
 		clusterObj, err := helper.GetObjectFromCache(c.RESTMapper, c.InformerManager, fedKey)
 		if err != nil {
 			klog.ErrorS(err, "Failed to get the resource from member cluster cache", "kind", workload.GetKind(), "namespace", workload.GetNamespace(), "name", workload.GetName(), "cluster", cluster.Name)
 			return err
 		}
 
+		// 清理karmada添加的一些元数据，比如标签和注解
 		if workload.GetNamespace() == corev1.NamespaceAll {
 			detector.CleanupCPPClaimMetadata(workload)
 		} else {
@@ -263,6 +279,7 @@ func (c *Controller) removeFinalizer(ctx context.Context, work *workv1alpha1.Wor
 }
 
 // syncToClusters ensures that the state of the given object is synchronized to member clusters.
+// 同步资源到目标集群
 func (c *Controller) syncToClusters(ctx context.Context, clusterName string, work *workv1alpha1.Work) error {
 	var errs []error
 	syncSucceedNum := 0
@@ -275,6 +292,7 @@ func (c *Controller) syncToClusters(ctx context.Context, clusterName string, wor
 			continue
 		}
 
+		// 在代码中也可以经常写类似的tryCreateOrUpdate方法
 		if err = c.tryCreateOrUpdateWorkload(ctx, clusterName, workload); err != nil {
 			klog.ErrorS(err, "Failed to create or update resource in the given member cluster", "namespace", workload.GetNamespace(), "name", workload.GetName(), "cluster", clusterName)
 			c.eventf(workload, corev1.EventTypeWarning, events.EventReasonSyncWorkloadFailed, "Failed to create or update resource(%s) in member cluster(%s): %v", klog.KObj(workload), clusterName, err)

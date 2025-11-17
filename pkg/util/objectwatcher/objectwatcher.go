@@ -296,6 +296,7 @@ func (o *objectWatcherImpl) deleteVersionRecord(clusterName, resourceName string
 
 func (o *objectWatcherImpl) NeedsUpdate(clusterName string, desiredObj, clusterObj *unstructured.Unstructured) bool {
 	// get resource version
+	// 获取内部记录的version
 	version, _ := o.getVersionRecord(clusterName, desiredObj.GroupVersionKind().String()+"/"+desiredObj.GetNamespace()+"/"+desiredObj.GetName())
 	return lifted.ObjectNeedsUpdate(desiredObj, clusterObj, version)
 }

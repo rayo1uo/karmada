@@ -80,9 +80,18 @@ type WorkStatusController struct {
 	ResourceInterpreter         resourceinterpreter.ResourceInterpreter
 }
 
+/*
+workStatusController的核心职责是：监听成员集群中由karmada分发的真实资源的状态，并将这些状态信息（包括原始status、健康状况）等
+回写到karmada控制面对应的work对象的status字段中;
+workStatusController采用一种动态、事件驱动的机制，其工作原理分为两大块：
+1. Reconcile循环：动态为成员集群资源创建监听器（Informer）
+2. AsyncWorker异步工作队列：由事件驱动，执行真正的状态回传
+*/
+
 // Reconcile performs a full reconciliation for the object referred to by the Request.
 // The Controller will requeue the Request to be processed again if an error is non-nil or
 // Result.Requeue is true, otherwise upon completion it will remove the work from the queue.
+// Reconcile循环的核心作用是“按需准备”，当一个work被成功下发后，它确保在对应的成员集群上，有相应的Informer正在监视Work中定义的这些资源
 func (c *WorkStatusController) Reconcile(ctx context.Context, req controllerruntime.Request) (controllerruntime.Result, error) {
 	klog.V(4).InfoS("Reconciling status of Work.", "namespace", req.Namespace, "name", req.Name)
 
@@ -122,6 +131,7 @@ func (c *WorkStatusController) Reconcile(ctx context.Context, req controllerrunt
 		return controllerruntime.Result{}, err
 	}
 
+	// 以上的处理逻辑与execution_controller的Reconcile逻辑大致相同，核心的区别在下面的函数实现
 	return c.buildResourceInformers(cluster, work)
 }
 
@@ -139,17 +149,19 @@ func (c *WorkStatusController) buildResourceInformers(cluster *clusterv1alpha1.C
 // getEventHandler return callback function that knows how to handle events from the member cluster.
 func (c *WorkStatusController) getEventHandler() cache.ResourceEventHandler {
 	if c.eventHandler == nil {
+		// 在没有显式声明的情况下，使用c.worker.Enqueue作为事件处理函数
 		c.eventHandler = fedinformer.NewHandlerOnEvents(c.onAdd, c.onUpdate, c.onDelete)
 	}
 	return c.eventHandler
 }
 
 // RunWorkQueue initializes worker and run it, worker will process resource asynchronously.
+// 初始化AsyncWorker并运行它，worker将异步处理资源
 func (c *WorkStatusController) RunWorkQueue() {
 	workerOptions := util.Options{
 		Name:             "work-status",
-		KeyFunc:          generateKey,
-		ReconcileFunc:    c.syncWorkStatus,
+		KeyFunc:          generateKey,      // 输入object生成对应的入队的key
+		ReconcileFunc:    c.syncWorkStatus, // 每次enqueue后都会调用syncWorkStatus来处理这个object key
 		UsePriorityQueue: features.FeatureGate.Enabled(features.ControllerPriorityQueue),
 	}
 	c.worker = util.NewAsyncWorker(workerOptions)
@@ -255,6 +267,14 @@ func (c *WorkStatusController) updateResource(ctx context.Context, observedObj *
 
 	// we should check if the observed status is consistent with the declaration to prevent accidental changes made
 	// in member clusters.
+	// 检查成员集群中的实际状态是否与期望状态一致，防止成员集群中的意外修改
+	/*
+		想象以下的场景，
+		1. executin_controller已经成功将一个replicas: 3的deployment下发到成员集群；
+		2. 此时，一个有权限的用户手动登陆到该集群，执行kubectl scale deployment --replicas=1，将副本数改成了1
+		3. 这个手动修改并不会触发execution_controller，因为它只监听work对象的变更；
+		4. 但是这个修改会产生一个Deployment的update事件，这个事件会被正在监听该资源的work_status_controller的Informer捕获到
+	*/
 	needUpdate := c.ObjectWatcher.NeedsUpdate(clusterName, desiredObj, observedObj)
 	if needUpdate {
 		operationResult, updateErr := c.ObjectWatcher.Update(ctx, clusterName, desiredObj, observedObj)
@@ -360,6 +380,7 @@ func (c *WorkStatusController) updateAppliedCondition(ctx context.Context, work 
 
 // reflectStatus grabs cluster object's running status then updates to its owner object(Work).
 func (c *WorkStatusController) reflectStatus(ctx context.Context, work *workv1alpha1.Work, clusterObj *unstructured.Unstructured) error {
+	// ResourceInterpreter资源解释器知道如何从一个deployment中提取status字段，或者从一个Service中提取status.loadBalancer字段
 	statusRaw, err := c.ResourceInterpreter.ReflectStatus(clusterObj)
 	if err != nil {
 		klog.ErrorS(err, "Failed to reflect status for object with resourceInterpreter", "kind", clusterObj.GetKind(), "resource", clusterObj.GetNamespace()+"/"+clusterObj.GetName())
@@ -475,10 +496,12 @@ func (c *WorkStatusController) registerInformersAndStart(cluster *clusterv1alpha
 		return err
 	}
 
+	// 使用dynamicInformer来实现对任意类型资源的监听
 	allSynced := true
 	for gvr := range gvrTargets {
 		if !singleClusterInformerManager.IsInformerSynced(gvr) || !singleClusterInformerManager.IsHandlerExist(gvr, c.getEventHandler()) {
 			allSynced = false
+			// 注册对应资源类型的informer和eventHandler
 			singleClusterInformerManager.ForResource(gvr, c.getEventHandler())
 		}
 	}
