@@ -13,8 +13,8 @@ spec:
         - member1
         - member2
     replicaScheduling:
-      replicaDivisionPreference: Weighted
-      replicaSchedulingType: Divided
+      replicaDivisionPreference: Weighted #使用加权方式分配副本
+      replicaSchedulingType: Divided #副本会被分割分配到不同集群
       weightPreference:
         staticWeightList:
           - targetCluster:
