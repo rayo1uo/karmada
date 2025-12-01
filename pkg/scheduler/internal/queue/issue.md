@@ -42,7 +42,17 @@ func (bq *prioritySchedulingQueue) flushBackoffQCompleted() {
 
 **How to reproduce it (as minimally and precisely as possible)**:
 
+We can assume a test case:
+
+1. Create a high-priority Binding A that fails scheduling and enters backoffQ with a long backoff duration (e.g., 10s).
+2. Create a low-priority Binding B that fails scheduling and enters backoffQ with a short backoff duration (e.g., 1s).
+3. Because A has higher priority, it will be at the top of backoffQ.
+4. Wait for 2 seconds. Binding B is ready to retry, but flushBackoffQCompleted checks A, sees it's not ready, and stops. Binding B is blocked until A is ready.
+
+
 **Anything else we need to know?**:
+
+We should implement a Less function for `backoffQ` that compares the backoff expiry time of two bindings.
 
 **Environment**:
 - Karmada version:
