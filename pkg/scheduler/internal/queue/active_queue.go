@@ -48,6 +48,27 @@ func NewActiveQueue(metricRecorder metrics.MetricRecorder) ActiveQueue {
 	return q
 }
 
+/*
+activeBindings (Heap):
+
+角色: 真正的“队列”（实际上是堆）。
+作用: 存放当前可以被消费者立即取走的任务。只有在这里面的元素，才能被Pop()出来。
+特性: 有序（按优先级）。
+
+dirtyBindings (Set):
+
+角色: “待处理”集合。
+作用: 标记所有需要被处理的元素。
+特性: 只要一个元素被 Push进来，它就一定在 dirty 集合中，直到它被 Pop 出去开始处理。
+它的主要作用是去重——如果一个元素已经在 dirty 集中，再次 Push 它是无效的（或者说是被折叠了）。
+
+processingBindings (Set):
+角色: “正在处理”集合。
+作用: 标记所有正在被消费者处理（已被 Pop 但未 Done ）的元素。
+特性: 防止同一个元素被多个消费者并发处理（虽然目前 Karmada 调度器是单 worker，但这个设计是并发安全的）。
+更重要的是，它配合 dirty 集合实现了“处理中更新”的逻辑。
+*/
+
 // activequeue is a priority work queue, which implements a ActiveQueue.
 type activequeue struct {
 	// activeBindings defines the order in which we will work on items. Every
@@ -56,7 +77,7 @@ type activequeue struct {
 	activeBindings *heap.Heap[*QueuedBindingInfo]
 
 	// dirtyBindings defines all of the items that need to be processed.
-	dirtyBindings sets.Set[string]
+	dirtyBindings sets.Set[string] // 待处理状态的元素
 
 	// Things that are currently being processed are in the processingBindings set.
 	// These things may be simultaneously in the dirtyBindings set. When we finish
@@ -76,6 +97,7 @@ func (q *activequeue) Push(bindingInfo *QueuedBindingInfo) {
 	if q.shuttingDown {
 		return
 	}
+	// 如果dirtyBindings中已经存在，说明该bindingInfo已经被Push过，直接返回
 	if q.dirtyBindings.Has(bindingInfo.NamespacedKey) {
 		return
 	}
@@ -86,10 +108,11 @@ func (q *activequeue) Push(bindingInfo *QueuedBindingInfo) {
 		bindingInfo.InitialAttemptTimestamp = &now
 	}
 	q.dirtyBindings.Insert(bindingInfo.NamespacedKey)
-	if q.processingBindings.Has(bindingInfo.NamespacedKey) {
+	if q.processingBindings.Has(bindingInfo.NamespacedKey) { // S1:如果正在被处理，不加到activeBindings避免被并发处理
 		return
 	}
 
+	// 如果没有正在被处理，就将该对象加入到堆中（表示ready被处理），等待被处理
 	q.activeBindings.AddOrUpdate(bindingInfo)
 	q.cond.Signal()
 }
@@ -120,7 +143,7 @@ func (q *activequeue) Pop() (bindingInfo *QueuedBindingInfo, shutdown bool) {
 	bindingInfo, _ = q.activeBindings.Pop()
 	bindingInfo.Attempts++
 	q.processingBindings.Insert(bindingInfo.NamespacedKey)
-	q.dirtyBindings.Delete(bindingInfo.NamespacedKey)
+	q.dirtyBindings.Delete(bindingInfo.NamespacedKey) // binding正在被处理，从dirtyBindings中删除
 
 	return bindingInfo, false
 }
@@ -132,8 +155,10 @@ func (q *activequeue) Done(bindingInfo *QueuedBindingInfo) {
 	q.cond.L.Lock()
 	defer q.cond.L.Unlock()
 
-	q.processingBindings.Delete(bindingInfo.NamespacedKey)
-	if q.dirtyBindings.Has(bindingInfo.NamespacedKey) {
+	q.processingBindings.Delete(bindingInfo.NamespacedKey) // 如果处理完了，就从processingBindings中删除
+	if q.dirtyBindings.Has(bindingInfo.NamespacedKey) {    // S1 callback: 如果在被处理期间又有相同的元素被加入到这个优先级队列中，
+		// 由于在加入时该元素已经在processingBindings中，所以并没有被加入到activeBindings中
+		// 这里就需要把它重新加入到activeBindings中，等待被处理
 		bindingInfo.Timestamp = time.Now()
 		q.activeBindings.AddOrUpdate(bindingInfo)
 		q.cond.Signal()

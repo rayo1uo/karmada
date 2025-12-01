@@ -178,6 +178,7 @@ type prioritySchedulingQueue struct {
 	// are popped from this heap before the scheduler looks at activeQ.
 	backoffQ *heap.Heap[*QueuedBindingInfo]
 	// unschedulableBindings holds bindings that have been tried and determined unschedulable.
+	// 存放已经被尝试调度过，但被判定为暂时无法调度的Binding
 	unschedulableBindings *UnschedulableBindings
 }
 
@@ -302,6 +303,7 @@ func (bq *prioritySchedulingQueue) PushUnschedulableIfNotPresent(bindingInfo *Qu
 	bq.lock.Lock()
 	defer bq.lock.Unlock()
 
+	// 如果backoffQ或者activeQ中已经存在，直接返回
 	if bq.backoffQ.Has(bindingInfo) || bq.activeQ.Has(bindingInfo.NamespacedKey) {
 		return
 	}
@@ -314,6 +316,7 @@ func (bq *prioritySchedulingQueue) PushBackoffIfNotPresent(bindingInfo *QueuedBi
 	bq.lock.Lock()
 	defer bq.lock.Unlock()
 
+	// 如果unschedulableBindings或者activeQ中已经存在，直接返回
 	if bq.unschedulableBindings.get(bindingInfo.NamespacedKey) != nil || bq.activeQ.Has(bindingInfo.NamespacedKey) {
 		return
 	}
@@ -341,7 +344,7 @@ func (bq *prioritySchedulingQueue) Forget(bindingInfo *QueuedBindingInfo) {
 
 // moveToActiveQ tries to add binding to active queue and remove it from unschedulable and backoff queues.
 func (bq *prioritySchedulingQueue) moveToActiveQ(bindingInfo *QueuedBindingInfo) {
-	bq.activeQ.Push(bindingInfo)
+	bq.activeQ.Push(bindingInfo)        // 从activeQ中加入bindingInfo, backoffQ和unschedulableBindings中删除
 	_ = bq.backoffQ.Delete(bindingInfo) // just ignore this not-found error
 	bq.unschedulableBindings.delete(bindingInfo.NamespacedKey)
 	klog.V(4).InfoS("Binding moved to an internal scheduling queue", "binding", bindingInfo.NamespacedKey, "queue", activeQ)
