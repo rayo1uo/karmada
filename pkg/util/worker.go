@@ -122,6 +122,7 @@ func NewAsyncWorker(opt Options) AsyncPriorityWorker {
 			o.RateLimiter = workqueue.NewTypedItemExponentialFailureRateLimiter[any](rateLimiterOpts.RateLimiterBaseDelay, rateLimiterOpts.RateLimiterMaxDelay)
 		})
 	} else {
+		// 如果不适用优先级队列，使用FIFO先进先出队列（带限流和延迟加入）
 		queue = workqueue.NewTypedRateLimitingQueueWithConfig(ratelimiterflag.DefaultControllerRateLimiter[any](opt.RateLimiterOptions), workqueue.TypedRateLimitingQueueConfig[any]{
 			Name: opt.Name,
 		})

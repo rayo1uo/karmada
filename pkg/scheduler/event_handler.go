@@ -312,6 +312,10 @@ func schedulerNameFilter(schedulerNameFromOptions, schedulerName string) bool {
 	return schedulerNameFromOptions == schedulerName
 }
 
+// reconcileCluster 集群状态变更：例如集群标签变更、集群删除等，需要重新触发调度
+/*
+当某个Cluster发生状态变化时，找出所有可能受到影响的ResourceBinding(RB)和ClusterResourceBinding(CRB),并将它们重新加入调度队列
+*/
 func (s *Scheduler) reconcileCluster(key util.QueueKey) error {
 	cluster, ok := key.(*clusterv1alpha1.Cluster)
 	if !ok {
@@ -330,14 +334,14 @@ func (s *Scheduler) enqueueAffectedBindings(cluster *clusterv1alpha1.Cluster) er
 	bindings, _ := s.bindingLister.List(labels.Everything())
 	for _, binding := range bindings {
 		placementPtr := binding.Spec.Placement
-		if placementPtr == nil {
+		if placementPtr == nil { // 如果binding没有放置策略（理论上不应发生）
 			// never reach here
 			continue
 		}
-		if !schedulerNameFilter(s.schedulerName, binding.Spec.SchedulerName) {
+		if !schedulerNameFilter(s.schedulerName, binding.Spec.SchedulerName) { // 如果binding的调度器名称与当前调度器名称不匹配
 			continue
 		}
-		if binding.Spec.SchedulingSuspended() {
+		if binding.Spec.SchedulingSuspended() { // binding被显式地挂起
 			continue
 		}
 
@@ -349,6 +353,7 @@ func (s *Scheduler) enqueueAffectedBindings(cluster *clusterv1alpha1.Cluster) er
 				// cache. Just enqueue the binding to avoid missing the cluster
 				// update event.
 				s.onResourceBindingRequeue(binding, metrics.ClusterChanged)
+				// 如果绑定的SchedulerObservedGeneration与当前的Generation不匹配，说明绑定可能还在队列中等待调度，或者状态未同步到缓存，将绑定重新加入队列
 				continue
 			}
 			affinityIndex := getAffinityIndex(placementPtr.ClusterAffinities, binding.Status.SchedulerObservedAffinityName)
@@ -357,10 +362,12 @@ func (s *Scheduler) enqueueAffectedBindings(cluster *clusterv1alpha1.Cluster) er
 			affinity = placementPtr.ClusterAffinity
 		}
 
+		// 匹配检查
 		switch {
 		case affinity == nil:
 			// If no clusters specified, add it to the queue
-			fallthrough
+			// 如果没有定义Affinity，意味着匹配所有的集群；既然有一个集群状态变了，那么这个绑定显然可能受到影响
+			fallthrough // fallthrough忽略下一个case的条件判断，直接执行requeue操作
 		case util.ClusterMatches(cluster, *affinity):
 			// If the cluster manifest match the affinity, add it to the queue, trigger rescheduling
 			s.onResourceBindingRequeue(binding, metrics.ClusterChanged)

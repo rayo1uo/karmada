@@ -239,7 +239,7 @@ func NewScheduler(dynamicClient dynamic.Interface, karmadaClient karmadaclientse
 	bindingLister := factory.Work().V1alpha2().ResourceBindings().Lister()
 	clusterBindingLister := factory.Work().V1alpha2().ClusterResourceBindings().Lister()
 	clusterLister := factory.Cluster().V1alpha1().Clusters().Lister()
-	schedulerCache := schedulercache.NewCache(clusterLister)
+	schedulerCache := schedulercache.NewCache(clusterLister) // TODO: 这一部分代码待看
 
 	options := schedulerOptions{}
 	for _, opt := range opts {
@@ -252,12 +252,12 @@ func NewScheduler(dynamicClient dynamic.Interface, karmadaClient karmadaclientse
 	} else {
 		legacyQueue = workqueue.NewTypedRateLimitingQueueWithConfig(ratelimiterflag.DefaultControllerRateLimiter[any](options.RateLimiterOptions), workqueue.TypedRateLimitingQueueConfig[any]{Name: "scheduler-queue"})
 	}
-	registry := frameworkplugins.NewInTreeRegistry()
+	registry := frameworkplugins.NewInTreeRegistry() // 获取初始的插件注册表
 	if err := registry.Merge(options.outOfTreeRegistry); err != nil {
 		return nil, err
 	}
-	registry = registry.Filter(options.plugins)
-	algorithm, err := core.NewGenericScheduler(schedulerCache, registry)
+	registry = registry.Filter(options.plugins)                          // 根据配置过滤一些插件
+	algorithm, err := core.NewGenericScheduler(schedulerCache, registry) // TODO：这一部分代码待看
 	if err != nil {
 		return nil, err
 	}
@@ -276,6 +276,22 @@ func NewScheduler(dynamicClient dynamic.Interface, karmadaClient karmadaclientse
 		schedulerCache:       schedulerCache,
 	}
 
+	// AsyncWorker是一个通用的异步工作队列封装，旨在简化基于workqueue的控制器或处理器的实现
+	/*
+		工作流程：当调用Run(ctx, workerNumber)时：
+		1. 会根据workerNumber启动指定数量的并发Goroutine
+		2. 消费循环：每个goroutine会不断执行worker方法
+			Get: 从队列中获取一个Key
+			Done: 标记Key处理完成
+			ReconcileFunc: 根据Key执行ReconcileFunc
+			Error Handling(自动重试):
+				+ 如果reconcileFunc返回Error，调用w.queue.AddRateLimited(key)将key重新加入队列; 这意味着该key会根据限速策略
+				  如指数退避稍后被重新加入队列进行重试
+				+ 如果Success，调用w.queue.Forget(key)清楚该key的限速记录
+		3. 入队机制
+			Add/AddAfter：直接将key加入队列
+			Enqueue: helper方法，接收一个API对象，调用Add方法将Key放入队列
+	*/
 	sched.clusterReconcileWorker = util.NewAsyncWorker(util.Options{
 		Name:          "ClusterReconcileWorker",
 		ReconcileFunc: sched.reconcileCluster,
@@ -850,23 +866,28 @@ func (s *Scheduler) legacyHandleErr(err error, key interface{}) {
 }
 
 func (s *Scheduler) reconcileEstimatorConnection(key util.QueueKey) error {
+	// 1. 解析key，获取Cluster Name
 	name, ok := key.(string)
 	if !ok {
 		return fmt.Errorf("failed to reconcile estimator connection as invalid key: %v", key)
 	}
 
+	// 2. 获取Cluster对象
 	cluster, err := s.clusterLister.Get(name)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
+			// 如果Cluster在Lister中找不到了，那么需要清理掉缓存中与该集群Estimator的连接
 			s.schedulerEstimatorCache.DeleteCluster(name)
 			return nil
 		}
 		return err
 	}
+	// 3. 如果集群的SyncMode为Pull，且disableSchedulerEstimatorInPullMode为true，那么不需要建立Estimator连接
 	if cluster.Spec.SyncMode == clusterv1alpha1.Pull && s.disableSchedulerEstimatorInPullMode {
 		return nil
 	}
 
+	// 4. 构造Estimator服务信息：Estimator的Service名字规则通常是: {prefix}-{clusterName}，例如karmada-scheduler-estimator-member1
 	serviceInfo := estimatorclient.SchedulerEstimatorServiceInfo{
 		Name:       name,
 		Namespace:  s.schedulerEstimatorServiceNamespace,
