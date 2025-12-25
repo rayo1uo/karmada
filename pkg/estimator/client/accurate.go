@@ -89,6 +89,9 @@ func (se *SchedulerEstimator) GetUnschedulableReplicas(
 	})
 }
 
+/*
+MaxAvailableComponentSets grpc调用scheduler-estimator针对多组件的场景，估算一个集群最多能容纳多少套完整的组件集合
+*/
 func (se *SchedulerEstimator) maxAvailableComponentSets(ctx context.Context, cluster string, namespace string, components []workv1alpha2.Component) (int32, error) {
 	client, err := se.cache.GetClient(cluster)
 	if err != nil {
@@ -140,6 +143,9 @@ func toPBReplicaRequirements(cr *workv1alpha2.ComponentReplicaRequirements) pb.C
 	return out
 }
 
+/*
+maxAvailableReplicas grpc调用scheduler-estimator估算一个成员集群在满足特定资源需求的情况下，最多还能容纳多少个副本
+*/
 func (se *SchedulerEstimator) maxAvailableReplicas(ctx context.Context, cluster string, replicaRequirements *workv1alpha2.ReplicaRequirements) (int32, error) {
 	client, err := se.cache.GetClient(cluster)
 	if err != nil {
@@ -169,6 +175,10 @@ func (se *SchedulerEstimator) maxAvailableReplicas(ctx context.Context, cluster 
 	return res.MaxReplicas, nil
 }
 
+/*
+maxUnscheduableReplicas grpc调用scheduler-estimator获取指定workload在该集群中因调度失败而无法运行的副本数量；
+检查Pod是否处于PodScheduled:False且Reason为Unschedulable的状态，并且该状态的持续时间超过了设定的阈值
+*/
 func (se *SchedulerEstimator) maxUnscheduableReplicas(
 	ctx context.Context,
 	cluster string,

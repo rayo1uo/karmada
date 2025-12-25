@@ -80,6 +80,7 @@ type ResourceBindingSpec struct {
 
 	// ReplicaRequirements represents the resource and scheduling requirements for each replica.
 	// +optional
+	// 传统单组件模式，这类工作负载通常只有一种Pod模版
 	ReplicaRequirements *ReplicaRequirements `json:"replicaRequirements,omitempty"`
 
 	// Replicas represents the replica number of the referencing resource.
@@ -95,10 +96,14 @@ type ResourceBindingSpec struct {
 	// Note: This field is intended to replace the legacy ReplicaRequirements and Replicas fields above.
 	// It is only populated when the MultiplePodTemplatesScheduling feature gate is enabled.
 	// +optional
+	// Components是为复杂/多组件工作负载设计的，一个资源对象里包含多种不同的Pod模版，它们的资源需求和副本数完全不同
 	Components []Component `json:"components,omitempty"`
 
 	// Clusters represents target member clusters where the resource to be deployed.
 	// +optional
+	// Clusters字段主要用来存储调度结果，它的作用是记录调度器经过一系列计算后的调度结果
+	// 后续的Execution Controller会监听ResourceBinding的变化；后续的Execution Controller监听ResourceBinding的变化
+	// 从而根据这个调度结果生成对应的Work对象，从而把资源真正下发到指定的成员集群
 	Clusters []TargetCluster `json:"clusters,omitempty"`
 
 	// Placement represents the rule for select clusters to propagate resources.

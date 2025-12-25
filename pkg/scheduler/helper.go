@@ -50,6 +50,7 @@ func placementChanged(
 	}
 
 	// first check: entire placement does not change
+	// 如果placement完全一致，不需要重新进行调度
 	if reflect.DeepEqual(placement, appliedPlacement) {
 		return false
 	}

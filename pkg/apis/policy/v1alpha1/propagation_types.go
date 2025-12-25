@@ -474,6 +474,7 @@ type Placement struct {
 	//   2. If both ClusterAffinity and ClusterAffinities are not set, any cluster
 	//      can be scheduling candidates.
 	// +optional
+	// 简单的集群亲和性，类似于k8s中的nodeAffinity
 	ClusterAffinity *ClusterAffinity `json:"clusterAffinity,omitempty"`
 
 	// ClusterAffinities represents scheduling restrictions to multiple cluster
@@ -507,6 +508,8 @@ type Placement struct {
 	// Karmada scheduler could migrate workloads to the backup clusters.
 	//
 	// +optional
+	// 更高级的有序集群组选择：定义一组有顺序的亲和
+	// 性规则，当第一组无法满足需求（如资源不足）时，才会考虑第二组，以此类推；适用场景比如说主备容灾（优先私有云，满了再溢出到公有云）
 	ClusterAffinities []ClusterAffinityTerm `json:"clusterAffinities,omitempty"`
 
 	// ClusterTolerations represents the tolerations.
@@ -515,6 +518,7 @@ type Placement struct {
 
 	// SpreadConstraints represents a list of the scheduling constraints.
 	// +optional
+	// 控制资源如何在不同的故障域之间分布
 	SpreadConstraints []SpreadConstraint `json:"spreadConstraints,omitempty"`
 
 	// ReplicaScheduling represents the scheduling policy on dealing with the number of replicas

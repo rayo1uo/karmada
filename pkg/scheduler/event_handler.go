@@ -246,7 +246,7 @@ func (s *Scheduler) addCluster(obj interface{}) {
 	}
 	klog.V(3).Infof("Add event for cluster %s", cluster.Name)
 	if s.enableSchedulerEstimator {
-		s.schedulerEstimatorWorker.Add(cluster.Name)
+		s.schedulerEstimatorWorker.Add(cluster.Name) // 建立与新加入成员集群间的grpc连接
 	}
 }
 
@@ -263,18 +263,26 @@ func (s *Scheduler) updateCluster(oldObj, newObj interface{}) {
 	}
 	klog.V(3).Infof("Update event for cluster %s", newCluster.Name)
 
+	// 检测到集群状态更新:建立与新集群的grpc连接，可多次重复add（如果已经建立过连接，会直接返回）
 	if s.enableSchedulerEstimator {
 		s.schedulerEstimatorWorker.Add(newCluster.Name)
 	}
 
 	switch {
-	case oldCluster.DeletionTimestamp.IsZero() && !newCluster.DeletionTimestamp.IsZero():
+	case oldCluster.DeletionTimestamp.IsZero() && !newCluster.DeletionTimestamp.IsZero(): // 集群被标记删除，其上的资源需要被迁移走
+		// 重新将该集群的RB和CRB加入调度队列，触发重调度
 		s.clusterReconcileWorker.Add(newCluster)
-	case !equality.Semantic.DeepEqual(oldCluster.Labels, newCluster.Labels):
+	case !equality.Semantic.DeepEqual(oldCluster.Labels, newCluster.Labels): // 集群标签更新
 		fallthrough
-	case oldCluster.Generation != newCluster.Generation:
+	case oldCluster.Generation != newCluster.Generation: // 集群规格/状态变更
 		// To distinguish the old and new cluster objects, we need to add the entire object
 		// to the worker. Therefore, call Add func instead of Enqueue func.
+		/*
+			为什么要同时加入新的和旧的集群对象？
+			答：reconcile的核心逻辑是将所有的ResourceBinding捞出来，然后找出所有匹配当前Cluster对象的ResourceBinding和ClusterResourceBinding
+			并加入到调度队列触发调度；加入老的是因为已经调度的RB可能因为集群标签变更或规格变更不再满足，需要重新调度；加入新的是因为新标签可以匹配原本没有
+			被选中但现在可能符合条件的Binding
+		*/
 		s.clusterReconcileWorker.Add(oldCluster)
 		s.clusterReconcileWorker.Add(newCluster)
 	}

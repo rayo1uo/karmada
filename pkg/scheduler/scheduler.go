@@ -239,7 +239,7 @@ func NewScheduler(dynamicClient dynamic.Interface, karmadaClient karmadaclientse
 	bindingLister := factory.Work().V1alpha2().ResourceBindings().Lister()
 	clusterBindingLister := factory.Work().V1alpha2().ClusterResourceBindings().Lister()
 	clusterLister := factory.Cluster().V1alpha1().Clusters().Lister()
-	schedulerCache := schedulercache.NewCache(clusterLister) // TODO: 这一部分代码待看
+	schedulerCache := schedulercache.NewCache(clusterLister)
 
 	options := schedulerOptions{}
 	for _, opt := range opts {
@@ -316,7 +316,7 @@ func NewScheduler(dynamicClient dynamic.Interface, karmadaClient karmadaclientse
 	sched.enableEmptyWorkloadPropagation = options.enableEmptyWorkloadPropagation
 	sched.schedulerName = options.schedulerName
 
-	sched.addAllEventHandlers()
+	sched.addAllEventHandlers() // eventhandler监听rb,crb和cluster相关的k8s事件
 	return sched, nil
 }
 
@@ -334,12 +334,12 @@ func (s *Scheduler) Run(ctx context.Context) {
 	s.informerFactory.Start(ctx.Done())
 	s.informerFactory.WaitForCacheSync(ctx.Done())
 
-	s.clusterReconcileWorker.Run(ctx, 1)
+	s.clusterReconcileWorker.Run(ctx, 1) // 启动AsyncWorker
 
-	go wait.Until(s.worker, time.Second, ctx.Done())
+	go wait.Until(s.worker, time.Second, ctx.Done()) // kubernetes的标准写法：避免因为worker异常退出导致调度流程停止
 
 	if features.FeatureGate.Enabled(features.PriorityBasedScheduling) {
-		s.priorityQueue.Run()
+		s.priorityQueue.Run() // 定期会将不可调度的rb重新加入到activeQ中触发重新调度
 		<-ctx.Done()
 		s.priorityQueue.Close()
 	} else {
@@ -362,7 +362,7 @@ func (s *Scheduler) scheduleNext() bool {
 		}
 		defer s.priorityQueue.Done(bindingInfo)
 
-		err := s.doSchedule(bindingInfo.NamespacedKey)
+		err := s.doSchedule(bindingInfo.NamespacedKey) // 调度的核心流程
 		s.handleErr(err, bindingInfo)
 	} else {
 		key, shutdown := s.queue.Get()
@@ -417,6 +417,7 @@ func (s *Scheduler) doScheduleBinding(namespace, name string) (err error) {
 	appliedPlacementStr := util.GetLabelValue(rb.Annotations, util.PolicyPlacementAnnotation)
 	if placementChanged(*rb.Spec.Placement, appliedPlacementStr, rb.Status.SchedulerObservedAffinityName) {
 		// policy placement changed, need schedule
+		// 如果放置策略发生变更，需要重新进行调度
 		klog.Infof("Start to schedule ResourceBinding(%s/%s) as placement changed", namespace, name)
 		err = s.scheduleResourceBinding(rb)
 		metrics.BindingSchedule(string(ReconcileSchedule), utilmetrics.DurationInSeconds(start), err)
@@ -424,6 +425,7 @@ func (s *Scheduler) doScheduleBinding(namespace, name string) (err error) {
 	}
 	if util.IsBindingReplicasChanged(&rb.Spec, rb.Spec.Placement.ReplicaScheduling) {
 		// binding replicas changed, need reschedule
+		// 检查spec中的replicas是否与当前的调度结果中的replicas一致，如果不一致触发重新调度
 		klog.Infof("Reschedule ResourceBinding(%s/%s) as replicas scaled down or scaled up", namespace, name)
 		err = s.scheduleResourceBinding(rb)
 		metrics.BindingSchedule(string(ScaleSchedule), utilmetrics.DurationInSeconds(start), err)
@@ -431,6 +433,7 @@ func (s *Scheduler) doScheduleBinding(namespace, name string) (err error) {
 	}
 	if util.RescheduleRequired(rb.Spec.RescheduleTriggeredAt, rb.Status.LastScheduledTime) {
 		// explicitly triggered reschedule
+		// 触发重新调度；用户通过设置RescheduleTriggeredAt字段来手动触发重新调度
 		klog.Infof("Reschedule ResourceBinding(%s/%s) as explicitly triggered reschedule", namespace, name)
 		err = s.scheduleResourceBinding(rb)
 		metrics.BindingSchedule(string(ReconcileSchedule), utilmetrics.DurationInSeconds(start), err)
@@ -440,12 +443,14 @@ func (s *Scheduler) doScheduleBinding(namespace, name string) (err error) {
 		rb.Spec.Placement.ReplicaSchedulingType() == policyv1alpha1.ReplicaSchedulingTypeDuplicated {
 		// Duplicated resources should always be scheduled. Note: non-workload is considered as duplicated
 		// even if scheduling type is divided.
+		// 如果是Duplicated策略（在所有匹配集群上都部署一份），或者是非workload资源（默认都认为是Duplicated策略）
 		klog.V(3).Infof("Start to schedule ResourceBinding(%s/%s) as scheduling type is duplicated", namespace, name)
 		err = s.scheduleResourceBinding(rb)
 		metrics.BindingSchedule(string(ReconcileSchedule), utilmetrics.DurationInSeconds(start), err)
 		return err
 	}
 	// TODO: reschedule binding on cluster change other than cluster deletion, such as cluster labels changed.
+	// 如果有目标集群正在被删除，需要触发重新调度
 	if s.HasTerminatingTargetClusters(&rb.Spec) {
 		klog.Infof("Reschedule ResourceBinding(%s/%s) as some scheduled clusters are deleted", namespace, name)
 		err = s.scheduleResourceBinding(rb)
@@ -457,6 +462,10 @@ func (s *Scheduler) doScheduleBinding(namespace, name string) (err error) {
 	// If no scheduling is required, we need to ensure that binding.Generation is equal to
 	// binding.Status.SchedulerObservedGeneration which means the current status of binding
 	// is the latest status of successful scheduling.
+	/*
+		如果不满足上述任何调度条件，说明当前调度结果依然有效，不需要重新计算；既然不需要调度，就更新schedulerObservedGeneration与generation一致
+		这相当于告诉系统：“我已经看过最新版本的 Binding 了，现有的调度结果是 OK 的，不需要动。” 防止控制器反复把这个对象加入队列
+	*/
 	if rb.Generation != rb.Status.SchedulerObservedGeneration {
 		updateRB := rb.DeepCopy()
 		updateRB.Status.SchedulerObservedGeneration = updateRB.Generation
@@ -584,6 +593,7 @@ func (s *Scheduler) scheduleResourceBinding(rb *workv1alpha2.ResourceBinding) (e
 	return s.scheduleResourceBindingWithClusterAffinity(rb)
 }
 
+// resourcebinding只有一个clusterAffinity字段
 func (s *Scheduler) scheduleResourceBindingWithClusterAffinity(rb *workv1alpha2.ResourceBinding) error {
 	klog.V(4).InfoS("Begin scheduling ResourceBinding with ClusterAffinity", "ResourceBinding", klog.KObj(rb))
 	defer klog.V(4).InfoS("End scheduling ResourceBinding with ClusterAffinity", "ResourceBinding", klog.KObj(rb))
@@ -612,6 +622,7 @@ func (s *Scheduler) scheduleResourceBindingWithClusterAffinity(rb *workv1alpha2.
 	return err
 }
 
+// 如果resourcebinding设置了clusterAffinities字段，按顺序依次进行调度
 func (s *Scheduler) scheduleResourceBindingWithClusterAffinities(rb *workv1alpha2.ResourceBinding) error {
 	klog.V(4).InfoS("Begin scheduling ResourceBinding with ClusterAffinities", "ResourceBinding", klog.KObj(rb))
 	defer klog.V(4).InfoS("End scheduling ResourceBinding with ClusterAffinities", "ResourceBinding", klog.KObj(rb))
@@ -848,16 +859,16 @@ func (s *Scheduler) handleErr(err error, bindingInfo *internalqueue.QueuedBindin
 	}
 
 	var unschedulableErr *framework.UnschedulableError
-	if errors.As(err, &unschedulableErr) {
+	if errors.As(err, &unschedulableErr) { // 如果是不可调度错误，那么将其加入到unschedulable队列
 		s.priorityQueue.PushUnschedulableIfNotPresent(bindingInfo)
 	} else {
-		s.priorityQueue.PushBackoffIfNotPresent(bindingInfo)
+		s.priorityQueue.PushBackoffIfNotPresent(bindingInfo) // 其他错误类型加入到backoff队列
 	}
 	metrics.CountSchedulerBindings(metrics.ScheduleAttemptFailure)
 }
 
 func (s *Scheduler) legacyHandleErr(err error, key interface{}) {
-	if err == nil || apierrors.HasStatusCause(err, corev1.NamespaceTerminatingCause) {
+	if err == nil || apierrors.HasStatusCause(err, corev1.NamespaceTerminatingCause) { // namespace正在被删除，放弃重试
 		s.queue.Forget(key)
 		return
 	}
