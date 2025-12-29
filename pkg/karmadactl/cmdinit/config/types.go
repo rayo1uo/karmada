@@ -86,6 +86,14 @@ type Certificates struct {
 	// +optional
 	CAKeyFile string `json:"caKeyFile,omitempty" yaml:"caKeyFile,omitempty"`
 
+	/*
+		ExternalDNS和ExternalIP用于扩展证书的合法访问地址；
+		ExternalDNS用于指定证书包含的额外的主机名或域名；
+		ExternalIP用于指定证书包含的额外IP地址；
+		通常，自动生成的证书只包含集群内的DNS名称，
+		举例来说，通过域名配置了一个ingress或load balancer，为了让kubectl能通过这个域名去访问而不报错，
+		必须将这个域名加入到ExternalDNS中
+	*/
 	// ExternalDNS is the list of external DNS names for the certificate
 	// +optional
 	ExternalDNS []string `json:"externalDNS,omitempty" yaml:"externalDNS,omitempty"`
@@ -140,6 +148,51 @@ type LocalEtcd struct {
 	StorageClassesName string `json:"storageClassesName,omitempty" yaml:"storageClassesName,omitempty"`
 }
 
+/*
+┌─────────────────────────┐                      ┌─────────────────────────┐
+│    Karmada API Server   │                      │     Etcd Cluster        │
+│         (客户端)         │                      │        (服务端)          │
+└───────────┬─────────────┘                      └───────────┬─────────────┘
+            │                                                 │
+            │  ① Client Hello                                 │
+            │  (支持的 TLS 版本、加密套件)                      │
+            │────────────────────────────────────────────────►│
+            │                                                 │
+            │  ② Server Hello + Server Certificate            │
+            │  (Etcd 发送自己的服务端证书)                      │
+            │◄────────────────────────────────────────────────│
+            │                                                 │
+            │  ③ Karmada 使用 CAFile 验证 Etcd 证书            │
+            │  ┌─────────────────────────────────────────┐    │
+            │  │ 验证步骤:                                │    │
+            │  │ a) 用 CAFile(etcd-ca.crt) 验证签名       │    │
+            │  │ b) 检查证书是否过期                       │    │
+            │  │ c) 检查证书 CN/SAN 是否匹配 endpoint     │    │
+            │  └─────────────────────────────────────────┘    │
+            │                                                 │
+            │  ④ Client Certificate (Certificate Request)     │
+            │  (Karmada 发送 CertFile 作为客户端证书)          │
+            │────────────────────────────────────────────────►│
+            │                                                 │
+            │                   ⑤ Etcd 验证客户端证书          │
+            │                   ┌─────────────────────────────┐
+            │                   │ 验证步骤:                    │
+            │                   │ a) 用 etcd-ca.crt 验证签名   │
+            │                   │ b) 检查证书是否在允许列表     │
+            │                   │ c) 检查证书权限               │
+            │                   └─────────────────────────────┘
+            │                                                 │
+            │  ⑥ Certificate Verify                           │
+            │  (Karmada 使用 KeyFile 对握手消息签名，证明持有私钥)│
+            │────────────────────────────────────────────────►│
+            │                                                 │
+            │  ⑦ Finished (握手完成，开始加密通信)              │
+            │◄───────────────────────────────────────────────►│
+            │                                                 │
+            │  ⑧ 加密的 gRPC 请求 (Get/Put/Watch)              │
+            │◄───────────────────────────────────────────────►│
+*/
+
 // ExternalEtcd defines the configuration of an external Etcd cluster
 type ExternalEtcd struct {
 	// Endpoints are the server addresses of the external Etcd cluster
@@ -148,10 +201,12 @@ type ExternalEtcd struct {
 
 	// CAFile is the path to the CA certificate for the external Etcd cluster
 	// +optional
+	// CAFile是Etcd CA证书，作用是让Karmada（作为客户端）验证Etcd服务器的身份
 	CAFile string `json:"caFile,omitempty" yaml:"caFile,omitempty"`
 
 	// CertFile is the path to the client certificate for the external Etcd cluster
 	// +optional
+	// CertFile是Etcd客户端证书，作用是让Etcd服务器验证Karmada（作为客户端）的身份
 	CertFile string `json:"certFile,omitempty" yaml:"certFile,omitempty"`
 
 	// KeyFile is the path to the client key for the external Etcd cluster
@@ -160,6 +215,7 @@ type ExternalEtcd struct {
 
 	// KeyPrefix is the key prefix used in the external Etcd cluster
 	// +optional
+	// ETCD中的key前缀，用于多租户隔离
 	KeyPrefix string `json:"keyPrefix,omitempty" yaml:"keyPrefix,omitempty"`
 }
 

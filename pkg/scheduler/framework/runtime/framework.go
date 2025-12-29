@@ -70,8 +70,10 @@ func NewFramework(r Registry, opts ...Option) (framework.Framework, error) {
 	f := &frameworkImpl{
 		metricsRecorder: options.metricsRecorder,
 	}
+	// 获取f.filterPlugins切片的reflect.Value对象，并通过.Elem()获取指针指向的实际值（即可设置的切片本身）
 	filterPluginsList := reflect.ValueOf(&f.filterPlugins).Elem()
 	scorePluginsList := reflect.ValueOf(&f.scorePlugins).Elem()
+	// 获取切片的实际类型
 	filterType := filterPluginsList.Type().Elem()
 	scoreType := scorePluginsList.Type().Elem()
 
@@ -184,8 +186,11 @@ func (frw *frameworkImpl) runScoreExtension(ctx context.Context, pl framework.Sc
 }
 
 func addPluginToList(plugin framework.Plugin, pluginType reflect.Type, pluginList *reflect.Value) {
+	// 判断传入的plugin是否实现了目标接口pluginType，例如检查一个plugin实例是否实现了ScorePlugin接口
 	if reflect.TypeOf(plugin).Implements(pluginType) {
+		// 动态追加：使用reflect.Append向切片中添加元素
 		newPlugins := reflect.Append(*pluginList, reflect.ValueOf(plugin))
+		// 通过Set方法更新原始切片
 		pluginList.Set(newPlugins)
 	}
 }

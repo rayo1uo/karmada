@@ -351,24 +351,26 @@ func (i *CommandInitOption) Complete() error {
 	if err != nil {
 		return err
 	}
-	i.KubeClientSet = clientSet
+	i.KubeClientSet = clientSet // 连接到kubernetes集群的客户端
 
-	if i.isNodePortExist() {
+	if i.isNodePortExist() { // 检测karmada apiserver对应service的nodePort是否已经被占用
 		return fmt.Errorf("nodePort of karmada apiserver %v already exist", i.KarmadaAPIServerNodePort)
 	}
 
 	if !i.isExternalEtcdProvided() && i.EtcdStorageMode == "hostPath" && i.EtcdNodeSelectorLabels == "" {
+		// hostPath模式下，etcd为什么要“选节点并打标签”？
+		// hostPath模式意味着etcd数据落在某个节点的本地磁盘目录；etcd pod如果飘移到别的节点就无法找到相关的数据
 		if err := i.AddNodeSelectorLabels(); err != nil {
 			return err
 		}
 	}
 
-	if err := i.getKarmadaAPIServerIP(); err != nil {
+	if err := i.getKarmadaAPIServerIP(); err != nil { // 获取master节点的IP地址
 		return err
 	}
 	klog.Infof("karmada apiserver ip: %s", i.KarmadaAPIServerIP)
 
-	if err := i.handleEtcdNodeSelectorLabels(); err != nil {
+	if err := i.handleEtcdNodeSelectorLabels(); err != nil { // 这里将传入的nodeSelector转换成Map
 		return err
 	}
 
@@ -433,11 +435,15 @@ func (i *CommandInitOption) genCerts() error {
 	notAfter := time.Now().Add(i.CertValidity).UTC()
 
 	var etcdServerCertConfig, etcdClientCertCfg *cert.CertsConfig
-	if !i.isExternalEtcdProvided() {
+	if !i.isExternalEtcdProvided() { // 准备etcd证书配置，仅针对本地etcd
 		etcdServerCertDNS := []string{
 			"localhost",
 		}
 		for number := int32(0); number < i.EtcdReplicas; number++ {
+			/*
+				etcdServerCertDNS = append(etcdServerCertDNS,
+					fmt.Sprintf("etcd-%v.etcd.karmada-system.svc.cluster.local", number))
+			*/
 			etcdServerCertDNS = append(etcdServerCertDNS, fmt.Sprintf("%s-%v.%s.%s.svc.%s",
 				etcdStatefulSetAndServiceName, number, etcdStatefulSetAndServiceName, i.Namespace, i.HostClusterDomain))
 		}
@@ -527,6 +533,35 @@ func (i *CommandInitOption) prepareCRD() error {
 	return nil
 }
 
+/*
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Secrets 挂载到组件的关系图                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────┐      ┌─────────────────────────────────────────┐
+│  etcd-cert      │─────►│  Etcd StatefulSet                       │
+│  Secret         │      │  /etc/karmada/pki/                      │
+└─────────────────┘      └─────────────────────────────────────────┘
+
+┌─────────────────┐      ┌─────────────────────────────────────────┐
+│  karmada-cert   │─────►│  karmada-apiserver Deployment           │
+│  Secret         │      │  /etc/karmada/pki/                      │
+│                 │─────►│  karmada-aggregated-apiserver           │
+└─────────────────┘      └─────────────────────────────────────────┘
+
+┌─────────────────┐      ┌─────────────────────────────────────────┐
+│  karmada-xxx-   │─────►│  karmada-controller-manager             │
+│  config Secret  │      │  /etc/kubeconfig (kubeconfig 文件)       │
+│                 │─────►│  karmada-scheduler                      │
+│                 │─────►│  kube-controller-manager                │
+└─────────────────┘      └─────────────────────────────────────────┘
+
+┌─────────────────┐      ┌─────────────────────────────────────────┐
+│  karmada-       │─────►│  karmada-webhook Deployment             │
+│  webhook-cert   │      │  /var/serving-cert/ (tls.crt, tls.key)  │
+└─────────────────┘      └─────────────────────────────────────────┘
+*/
+
 func (i *CommandInitOption) createCertsSecrets() error {
 	// Create karmada-config Secret
 	karmadaServerURL := fmt.Sprintf("https://%s.%s.svc.%s:%v", karmadaAPIServerDeploymentAndServiceName, i.Namespace, i.HostClusterDomain, karmadaAPIServerContainerPort)
@@ -538,6 +573,7 @@ func (i *CommandInitOption) createCertsSecrets() error {
 	}
 
 	for _, karmadaConfigSecretName := range karmadaConfigList {
+		// 创建多个karmada-config secret，是各控制器组件访问karmada api的kubeconfig
 		karmadaConfigSecret := i.SecretFromSpec(karmadaConfigSecretName, corev1.SecretTypeOpaque, map[string]string{util.KarmadaConfigFieldName: string(configBytes)})
 		if err = util.CreateOrUpdateSecret(i.KubeClientSet, karmadaConfigSecret); err != nil {
 			return err
@@ -561,6 +597,18 @@ func (i *CommandInitOption) createCertsSecrets() error {
 		karmadaCert[fmt.Sprintf("%s.crt", v)] = string(i.CertAndKeyFileData[fmt.Sprintf("%s.crt", v)])
 		karmadaCert[fmt.Sprintf("%s.key", v)] = string(i.CertAndKeyFileData[fmt.Sprintf("%s.key", v)])
 	}
+	// 创建karmada-cert secret，是所有karmada相关证书的集合
+	/*
+			karmada-cert Secret:
+		├── ca.crt / ca.key
+		├── etcd-ca.crt / etcd-ca.key
+		├── etcd-server.crt / etcd-server.key
+		├── etcd-client.crt / etcd-client.key
+		├── karmada.crt / karmada.key
+		├── apiserver.crt / apiserver.key
+		├── front-proxy-ca.crt / front-proxy-ca.key
+		└── front-proxy-client.crt / front-proxy-client.key
+	*/
 	karmadaSecret := i.SecretFromSpec(globaloptions.KarmadaCertsName, corev1.SecretTypeOpaque, karmadaCert)
 	if err := util.CreateOrUpdateSecret(i.KubeClientSet, karmadaSecret); err != nil {
 		return err
@@ -570,6 +618,7 @@ func (i *CommandInitOption) createCertsSecrets() error {
 		"tls.crt": string(i.CertAndKeyFileData[fmt.Sprintf("%s.crt", options.KarmadaCertAndKeyName)]),
 		"tls.key": string(i.CertAndKeyFileData[fmt.Sprintf("%s.key", options.KarmadaCertAndKeyName)]),
 	}
+	// 创建karmada-webhook-cert secret，是webhook专用的tls证书
 	karmadaWebhookSecret := i.SecretFromSpec(webhookCertsName, corev1.SecretTypeOpaque, karmadaWebhookCert)
 	if err := util.CreateOrUpdateSecret(i.KubeClientSet, karmadaWebhookSecret); err != nil {
 		return err
@@ -748,6 +797,9 @@ func (i *CommandInitOption) createKarmadaConfig() error {
 	if err != nil {
 		return err
 	}
+	// karmada.crt是客户端身份证书，其organization=system:masters赋予了管理员权限
+	// karmada.key是客户端私钥
+	// ca.crt是CA证书
 	if err := utils.WriteKubeConfigFromSpec(serverURL, options.UserName, options.ClusterName, i.KarmadaDataPath, options.KarmadaKubeConfigName,
 		i.CertAndKeyFileData[fmt.Sprintf("%s.crt", globaloptions.CaCertAndKeyName)], i.CertAndKeyFileData[fmt.Sprintf("%s.key", options.KarmadaCertAndKeyName)],
 		i.CertAndKeyFileData[fmt.Sprintf("%s.crt", options.KarmadaCertAndKeyName)]); err != nil {

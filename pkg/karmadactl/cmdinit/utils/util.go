@@ -94,16 +94,16 @@ func DeCompress(file, targetPath string) error {
 	}
 	defer r.Close()
 
-	gr, err := gzip.NewReader(r)
+	gr, err := gzip.NewReader(r) // 还原出tar流
 	if err != nil {
 		return fmt.Errorf("new reader failed. %v", err)
 	}
 	defer gr.Close()
 
-	tr := tar.NewReader(gr)
+	tr := tar.NewReader(gr) // 从tar流读取文件
 	for {
 		header, err := tr.Next()
-		if errors.Is(err, io.EOF) {
+		if errors.Is(err, io.EOF) { // 读取结束
 			break
 		}
 		if err != nil {
@@ -111,11 +111,11 @@ func DeCompress(file, targetPath string) error {
 		}
 
 		switch header.Typeflag {
-		case tar.TypeDir:
+		case tar.TypeDir: // 如果读取到目录则创建该目录
 			if err := os.Mkdir(targetPath+"/"+header.Name, 0700); err != nil {
 				return err
 			}
-		case tar.TypeReg:
+		case tar.TypeReg: // 如果读取到文件则对应地创建该文件
 			outFile, err := os.OpenFile(targetPath+"/"+header.Name, os.O_CREATE|os.O_RDWR, util.DefaultFilePerm)
 			if err != nil {
 				return err

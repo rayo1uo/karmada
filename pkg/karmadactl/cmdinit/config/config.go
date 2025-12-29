@@ -60,6 +60,7 @@ func loadInitConfigurationFromFile(cfgPath string) (*KarmadaInitConfig, error) {
 func ParseGVKYamlMap(yamlBytes []byte) (map[schema.GroupVersionKind][]byte, error) {
 	gvkmap := make(map[schema.GroupVersionKind][]byte)
 
+	// 解析yaml文件的元数据GVK，确认它是一个合法的kubernetes风格的配置对象
 	gvk, err := yamlserializer.DefaultMetaFactory.Interpret(yamlBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to interpret YAML document: %w", err)
@@ -88,10 +89,12 @@ func documentMapToInitConfiguration(gvkmap map[schema.GroupVersionKind][]byte) (
 	for _, gvk := range gvks {
 		fileContent := gvkmap[gvk]
 		if gvk.Kind == "KarmadaInitConfig" {
+			// 遍历Map中的GVK，寻找kind为KarmadaInitConfig的配置，确认找到配置Group为config.karmada.io且Version为v1alpha1
 			if gvk.Group != GroupName || gvk.Version != SchemeGroupVersion.Version {
 				return nil, fmt.Errorf("invalid Group or Version: expected group %q and version %q, but got group %q and version %q", GroupName, SchemeGroupVersion.Version, gvk.Group, gvk.Version)
 			}
 			initcfg = &KarmadaInitConfig{}
+			// 反序列化到结构体中
 			if err := yaml.Unmarshal(fileContent, initcfg); err != nil {
 				return nil, err
 			}

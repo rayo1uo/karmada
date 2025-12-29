@@ -126,7 +126,7 @@ func (g *genericScheduler) findClustersThatFit(
 	defer metrics.ScheduleStep(metrics.ScheduleStepFilter, startTime)
 
 	diagnosis := framework.Diagnosis{
-		ClusterToResultMap: make(framework.ClusterToResultMap),
+		ClusterToResultMap: make(framework.ClusterToResultMap), // 记录每个集群的filter结果
 	}
 
 	var out []*clusterv1alpha1.Cluster

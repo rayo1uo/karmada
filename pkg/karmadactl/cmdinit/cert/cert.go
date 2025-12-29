@@ -270,51 +270,63 @@ func NewCertConfig(cn string, org []string, altNames certutil.AltNames, notAfter
 
 // GenCerts Create CA certificate and sign etcd karmada certificate.
 func GenCerts(pkiPath, caCertFile, caKeyFile string, etcdServerCertCfg, etcdClientCertCfg, karmadaCertCfg, apiserverCertCfg, frontProxyClientCertCfg *CertsConfig) error {
+	// 1. 获取或生成CA证书和密钥
 	caCert, caKey, err := getCACertAndKey(caCertFile, caKeyFile)
 	if err != nil {
 		return err
 	}
 
+	// 2. 写入CA证书
 	if err = WriteCertAndKey(pkiPath, globaloptions.CaCertAndKeyName, caCert, caKey); err != nil {
 		return err
 	}
 
+	// 3. 使用CA签发karmada证书
 	karmadaCert, karmadaKey, err := NewCertAndKey(caCert, *caKey, karmadaCertCfg)
 	if err != nil {
 		return err
 	}
+	// 4. 写入karmada证书
 	if err = WriteCertAndKey(pkiPath, options.KarmadaCertAndKeyName, karmadaCert, &karmadaKey); err != nil {
 		return err
 	}
 
+	// 5. 使用CA签发apiserver证书
 	apiserverCert, apiserverKey, err := NewCertAndKey(caCert, *caKey, apiserverCertCfg)
 	if err != nil {
 		return err
 	}
+	// 6. 写入apiserver证书
 	if err = WriteCertAndKey(pkiPath, options.ApiserverCertAndKeyName, apiserverCert, &apiserverKey); err != nil {
 		return err
 	}
 
+	// 7. 使用CA签发front-proxy-ca证书
 	frontProxyCaCert, frontProxyCaKey, err := NewCACertAndKey("front-proxy-ca")
 	if err != nil {
 		return err
 	}
+	// 8. 写入front-proxy-ca证书
 	if err = WriteCertAndKey(pkiPath, options.FrontProxyCaCertAndKeyName, frontProxyCaCert, frontProxyCaKey); err != nil {
 		return err
 	}
 
+	// 9. 使用front-proxy-ca签发front-proxy-client证书
 	frontProxyClientCert, frontProxyClientKey, err := NewCertAndKey(frontProxyCaCert, *frontProxyCaKey, frontProxyClientCertCfg)
 	if err != nil {
 		return err
 	}
+	// 10. 写入front-proxy-client证书
 	if err := WriteCertAndKey(pkiPath, options.FrontProxyClientCertAndKeyName, frontProxyClientCert, &frontProxyClientKey); err != nil {
 		return err
 	}
 
+	// 11. 如果etcdServerCertCfg和etcdClientCertCfg都为nil，表示使用外部etcd，直接返回
 	if etcdServerCertCfg == nil && etcdClientCertCfg == nil {
 		// use external etcd
 		return nil
 	}
+	// 12. 生成etcd证书
 	return genEtcdCerts(pkiPath, etcdServerCertCfg, etcdClientCertCfg)
 }
 

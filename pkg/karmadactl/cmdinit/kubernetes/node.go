@@ -32,6 +32,7 @@ import (
 
 func (i *CommandInitOption) getKarmadaAPIServerIP() error {
 	if i.KarmadaAPIServerAdvertiseAddress != "" {
+		// 如果用户显式地设置了karmada apiserver的advertise address，就直接使用这个地址
 		i.KarmadaAPIServerIP = append(i.KarmadaAPIServerIP, utils.StringToNetIP(i.KarmadaAPIServerAdvertiseAddress))
 		return nil
 	}
